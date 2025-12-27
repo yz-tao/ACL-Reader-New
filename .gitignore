@@ -1,0 +1,23 @@
+# --- Xcode ---
+# 忽略个人用户设置（最重要！防止出现你之前的 plist 变动问题）
+xcuserdata/
+DerivedData/
+*.moved-aside
+*.xcuserstate
+
+# --- macOS ---
+# 忽略系统自动生成的缩略图文件
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- Swift Package Manager ---
+# 如果你以后用了第三方库，忽略构建目录
+.build/
+Packages/
+Package.pins
+Package.resolved
+
+# --- 授权与证书 ---
+# 虽然 .entitlements 需要提交，但某些临时签名文件不需要
+*.moved-aside
