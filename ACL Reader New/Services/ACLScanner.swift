@@ -6,9 +6,21 @@
 //
 
 import Foundation
-import Darwin // 很多底层 C 常量和函数（如 getgrgid, getpwuid）在这里
+import Darwin
 
 actor ACLScanner {
+    
+    // --- 核心加固：内存托管包装类 (RAII 模式) ---
+    // 逻辑：利用 Swift 类生命周期管理 ARC 引用计数，确保 C 指针在对象销毁时自动触发析构释放。
+    private class ManagedACL {
+        let pointer: acl_t
+        init(_ p: acl_t) { self.pointer = p }
+        deinit {
+            // 当 ManagedACL 实例引用计数归零时，自动执行洗手程序
+            acl_free(UnsafeMutableRawPointer(pointer))
+        }
+    }
+
     // 递归扫描的主入口：不仅读取当前路径，还会向上追溯继承源
     static func scanWithAncestry(at path: String) async throws -> [ACEEntry] {
         var finalEntries = try fetchRawEntries(at: path, depth: 0)
@@ -20,11 +32,34 @@ actor ACLScanner {
         var currentPath = path
         var currentDepth = 1
         
-        // 向上爬升，直到所有继承项找到源头，或到达根目录（限制最高64层以防万一）
+        // --- 核心加固：带隐私保护的物理路径守卫 ---
+        // 逻辑：仅在内存中存储物理 ID 的哈希值，任务结束自动销毁。
+        var visitedNodeHashes = Set<Int>()
+        
+        // 登记起始路径的物理身份指纹
+        if let rootID = getFileSystemIdentifier(for: path) {
+            visitedNodeHashes.insert(rootID)
+        }
+        
+        // 向上爬升（限制最高64层以防万一）
         while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
-            let parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
-            var allConfirmed = true
             
+            // 1. 物理拓扑校验 (Inode Guard)
+            // 获取父目录的物理身份证，若无法获取则中止溯源
+            guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
+            
+            // 查重逻辑：
+            // a) 如果哈希值已存在，说明路径存在逻辑回环（软链接死循环），立即停止。
+            // b) 同时也涵盖了磁盘挂载点变更检测。
+            if visitedNodeHashes.contains(currentNodeID) {
+                break
+            }
+            visitedNodeHashes.insert(currentNodeID)
+            
+            // 2. 执行扫描（维持当前逻辑：若在此处撞到沙盒墙，则抛出错误并由 ViewModel 显示引导）
+            let parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
+            
+            var allConfirmed = true
             for idx in inheritedIndices {
                 if finalEntries[idx].inheritanceDepth == -1 {
                     // 使用指纹匹配逻辑寻找显式源头
@@ -55,16 +90,18 @@ actor ACLScanner {
     // --- 核心辅助函数 ---
 
     private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
-        // 1. 先尝试直接读取 ACL
-        let acl = acl_get_file(path, ACL_TYPE_EXTENDED)
+        // 尝试获取文件系统的扩展 ACL
+        let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
         
-        // 2. 如果成功拿到 ACL，直接进入解析流程（不管 access，因为能拿到就说明有权）
-        if let validAcl = acl {
-            defer { acl_free(UnsafeMutableRawPointer(validAcl)) }
+        // 内存托管：一旦拿到原始指针，立即交给托管类处理
+        if let validRawAcl = rawAcl {
+            // 只要 aclManaged 变量在 fetchRawEntries 运行结束，其 ManagedACL 实例就会销毁并触发 acl_free
+            let aclManaged = ManagedACL(validRawAcl)
+            let aclPtr = aclManaged.pointer
             
             var results: [ACEEntry] = []
             var entry: acl_entry_t? = nil
-            var res = acl_get_entry(validAcl, ACL_FIRST_ENTRY.rawValue, &entry)
+            var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
             var i = 0
             
             while res == 0, let e = entry {
@@ -81,32 +118,56 @@ actor ACLScanner {
                     sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
                     index: i
                 ))
-                res = acl_get_entry(validAcl, ACL_NEXT_ENTRY.rawValue, &entry)
+                res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
                 i += 1
             }
             return results
         }
         
-        // 3. 如果 acl 为 nil，我们再用 POSIX 的 access 来探测原因
-        // R_OK 检查是否可读
+        // 权限探测逻辑
         if access(path, R_OK) != 0 {
             let e = errno
-            // 如果 access 报错 13(EACCES) 或 1(EPERM)，说明是真没权限
             if e == EACCES || e == EPERM {
                 throw POSIXError(.EACCES)
             }
-            // 如果是 ENOENT (2)，说明路径真的不存在
             if e == ENOENT {
                 throw POSIXError(.ENOENT)
             }
         }
         
-        // 4. 如果 access 成功了（返回 0），但 acl 是 nil
-        // 结论：有访问权限，但该文件确实没设置 ACL
+        // 有权限但无 ACL
         return []
     }
 
-    // 安全读取权限掩码，不使用危险的内存加载
+    // 获取物理标识符并进行哈希保护（去标识化处理）
+    private static func getFileSystemIdentifier(for path: String) -> Int? {
+        var st = stat()
+        // 通过 stat 获取 st_dev (设备ID) 和 st_ino (节点ID)
+        guard stat(path, &st) == 0 else { return nil }
+        // 将两者组合为指纹并哈希，保证仅在内存中存在且外部无法还原物理 ID
+        return "\(st.st_dev)-\(st.st_ino)".hashValue
+    }
+
+    // 将 UUID 转换为用户名或组名
+    private static func resolveName(_ entry: acl_entry_t) -> String {
+        guard let q = acl_get_qualifier(entry) else { return "未知" }
+        // 核心加固：qualifier 产生的内存必须立刻转换并在此处手动释放
+        defer { acl_free(q) }
+        
+        let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
+        var id: uid_t = 0
+        var type: Int32 = 0
+        
+        let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
+        
+        // 调用桥接后的系统函数解析身份
+        if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
+            if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
+            if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
+        }
+        return "ID: \(id)"
+    }
+
     private static func getSafeRawMask(_ entry: acl_entry_t) -> UInt32 {
         var ps: acl_permset_t? = nil
         acl_get_permset(entry, &ps)
@@ -145,28 +206,6 @@ actor ACLScanner {
         return acl_get_flag_np(validFs, acl_flag_t(ACL_ENTRY_INHERITED.rawValue)) == 1
     }
 
-    // 将 UUID 转换为人能看懂的用户名或组名
-    private static func resolveName(_ entry: acl_entry_t) -> String {
-            guard let q = acl_get_qualifier(entry) else { return "未知" }
-            defer { acl_free(q) }
-            
-            let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
-            var id: uid_t = 0
-            var type: Int32 = 0
-            
-            return withUnsafePointer(to: uPtr.pointee) { p -> String in
-                // 将 uuid_t 转换为指向 UInt8 的原始指针
-                let rawUuidPtr = UnsafeRawPointer(p).assumingMemoryBound(to: UInt8.self)
-                
-                // 调用我们上面手动声明或系统提供的函数
-                if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
-                    if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
-                    if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
-                }
-                return "ID: \(id)"
-            }
-        }
-
     private static func getUUIDString(_ entry: acl_entry_t) -> String {
         guard let q = acl_get_qualifier(entry) else { return "" }
         defer { acl_free(q) }
@@ -191,7 +230,6 @@ actor ACLScanner {
         return (parent == path) ? nil : parent
     }
 
-    // 指纹匹配核心逻辑
     private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry]) -> ACEEntry? {
         parentEntries.first {
             !$0.isInherited &&
