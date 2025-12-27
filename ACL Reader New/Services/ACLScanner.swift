@@ -42,32 +42,33 @@ actor ACLScanner {
         }
         
         // 向上爬升（限制最高64层以防万一）
+        // --- 在新分支 Sandbox-Refactor 中重构此循环 ---
         while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
             
-            // 1. 物理拓扑校验 (Inode Guard)
-            // 获取父目录的物理身份证，若无法获取则中止溯源
+            // 物理守卫逻辑维持不变
             guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
-            
-            // 查重逻辑：
-            // a) 如果哈希值已存在，说明路径存在逻辑回环（软链接死循环），立即停止。
-            // b) 同时也涵盖了磁盘挂载点变更检测。
-            if visitedNodeHashes.contains(currentNodeID) {
-                break
-            }
+            if visitedNodeHashes.contains(currentNodeID) { break }
             visitedNodeHashes.insert(currentNodeID)
             
-            // 2. 执行扫描（维持当前逻辑：若在此处撞到沙盒墙，则抛出错误并由 ViewModel 显示引导）
-            let parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
+            // --- 核心改进：优雅降级逻辑 ---
+            let parentEntries: [ACEEntry]
+            do {
+                // 尝试获取父目录 ACL
+                parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
+            } catch {
+                // 关键点：如果在溯源过程中遇到权限问题（EACCES/EPERM），不再抛出错误。
+                // 我们选择优雅地“就地解散”，保留目前已有的发现。
+                print("溯源至 \(parentPath) 时触发系统限制: \(error.localizedDescription)")
+                break
+            }
             
             var allConfirmed = true
             for idx in inheritedIndices {
                 if finalEntries[idx].inheritanceDepth == -1 {
-                    // 使用指纹匹配逻辑寻找显式源头
                     if let _ = findExplicitSource(for: finalEntries[idx], in: parentEntries) {
                         finalEntries[idx].inheritanceDepth = currentDepth
                         finalEntries[idx].sourcePath = parentPath
                     } else {
-                        // 这一层没找到，需要继续向上
                         allConfirmed = false
                     }
                 }
