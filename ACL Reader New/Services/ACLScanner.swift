@@ -90,83 +90,82 @@ actor ACLScanner {
     // --- 核心辅助函数 ---
 
     private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
-        // 尝试获取文件系统的扩展 ACL
-        let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
-        
-        // 内存托管：一旦拿到原始指针，立即交给托管类处理
-        if let validRawAcl = rawAcl {
-            // 只要 aclManaged 变量在 fetchRawEntries 运行结束，其 ManagedACL 实例就会销毁并触发 acl_free
-            let aclManaged = ManagedACL(validRawAcl)
-            let aclPtr = aclManaged.pointer
+            let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
             
-            var results: [ACEEntry] = []
-            var entry: acl_entry_t? = nil
-            var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
-            var i = 0
+            if let validRawAcl = rawAcl {
+                let aclManaged = ManagedACL(validRawAcl)
+                let aclPtr = aclManaged.pointer
+                
+                var results: [ACEEntry] = []
+                var entry: acl_entry_t? = nil
+                var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
+                var i = 0
+                
+                while res == 0, let e = entry {
+                    results.append(ACEEntry(
+                        name: resolveName(e),
+                        uuidString: getUUIDString(e),
+                        isGroup: checkIsGroup(e),
+                        type: getTagType(e),
+                        permissions: parsePermissions(e),
+                        flags: parseFlags(e),
+                        rawBitmask: getSafeRawMask(e),
+                        isInherited: checkIsInherited(e),
+                        inheritanceDepth: checkIsInherited(e) ? -1 : 0,
+                        sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
+                        index: i
+                    ))
+                    res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
+                    i += 1
+                }
+                return results
+            }
             
-            while res == 0, let e = entry {
-                results.append(ACEEntry(
-                    name: resolveName(e),
-                    uuidString: getUUIDString(e),
-                    isGroup: checkIsGroup(e),
-                    type: getTagType(e),
-                    permissions: parsePermissions(e),
-                    flags: parseFlags(e),
-                    rawBitmask: getSafeRawMask(e),
-                    isInherited: checkIsInherited(e),
-                    inheritanceDepth: checkIsInherited(e) ? -1 : 0,
-                    sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
-                    index: i
-                ))
-                res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
-                i += 1
+            // --- 文件夹 B 拒绝访问的精准诊断逻辑 ---
+            if access(path, R_OK) != 0 {
+                let err = errno
+                if err == EPERM {
+                    // EPERM 通常代表 Operation not permitted，常见于 SIP 保护或 TCC 硬拦截
+                    throw CustomError.systemRestricted(path)
+                } else if err == EACCES {
+                    // EACCES 代表 Permission denied，可能是 POSIX 000 或沙盒未授权
+                    if isPrivacySensitivePath(path) {
+                        throw CustomError.privacyRestricted(path)
+                    }
+                    throw POSIXError(.EACCES)
+                } else if err == ENOENT {
+                    throw POSIXError(.ENOENT)
+                }
             }
-            return results
+            return []
         }
-        
-        // 权限探测逻辑
-        if access(path, R_OK) != 0 {
-            let e = errno
-            if e == EACCES || e == EPERM {
-                throw POSIXError(.EACCES)
-            }
-            if e == ENOENT {
-                throw POSIXError(.ENOENT)
-            }
-        }
-        
-        // 有权限但无 ACL
-        return []
+
+        // 判断是否属于 TCC 隐私敏感区域（如 Documents, Desktop, Downloads）
+    private static func isPrivacySensitivePath(_ path: String) -> Bool {
+        let sensitivePatterns = ["/Documents", "/Desktop", "/Downloads", "/Library/Mail", "/Library/Messages"]
+        // 修正：使用 $0 代表当前遍历到的字符串模式
+        return sensitivePatterns.contains { path.contains($0) }
     }
 
-    // 获取物理标识符并进行哈希保护（去标识化处理）
-    private static func getFileSystemIdentifier(for path: String) -> Int? {
-        var st = stat()
-        // 通过 stat 获取 st_dev (设备ID) 和 st_ino (节点ID)
-        guard stat(path, &st) == 0 else { return nil }
-        // 将两者组合为指纹并哈希，保证仅在内存中存在且外部无法还原物理 ID
-        return "\(st.st_dev)-\(st.st_ino)".hashValue
-    }
-
-    // 将 UUID 转换为用户名或组名
-    private static func resolveName(_ entry: acl_entry_t) -> String {
-        guard let q = acl_get_qualifier(entry) else { return "未知" }
-        // 核心加固：qualifier 产生的内存必须立刻转换并在此处手动释放
-        defer { acl_free(q) }
-        
-        let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
-        var id: uid_t = 0
-        var type: Int32 = 0
-        
-        let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
-        
-        // 调用桥接后的系统函数解析身份
-        if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
-            if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
-            if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
+        private static func getFileSystemIdentifier(for path: String) -> Int? {
+            var st = stat()
+            guard stat(path, &st) == 0 else { return nil }
+            return "\(st.st_dev)-\(st.st_ino)".hashValue
         }
-        return "ID: \(id)"
-    }
+
+        private static func resolveName(_ entry: acl_entry_t) -> String {
+            guard let q = acl_get_qualifier(entry) else { return "未知" }
+            defer { acl_free(q) }
+            let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
+            var id: uid_t = 0
+            var type: Int32 = 0
+            let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
+            if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
+                if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
+                if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
+            }
+            return "ID: \(id)"
+        }
 
     private static func getSafeRawMask(_ entry: acl_entry_t) -> UInt32 {
         var ps: acl_permset_t? = nil
@@ -236,6 +235,19 @@ actor ACLScanner {
             $0.uuidString == target.uuidString &&
             $0.type == target.type &&
             $0.rawBitmask == target.rawBitmask
+        }
+    }
+}
+enum CustomError: LocalizedError {
+    case systemRestricted(String)
+    case privacyRestricted(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .systemRestricted(let path):
+            return "系统强制保护: 文件夹 '\(URL(fileURLWithPath: path).lastPathComponent)' 受 macOS 系统完整性保护 (SIP) 或内核拦截，无法读取 ACL。"
+        case .privacyRestricted(let path):
+            return "隐私受限: 无法读取 '\(URL(fileURLWithPath: path).lastPathComponent)'。请在“系统设置 -> 隐私与安全性 -> 完全磁盘访问权限”中授权此 App。"
         }
     }
 }
