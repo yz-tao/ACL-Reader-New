@@ -55,51 +55,55 @@ actor ACLScanner {
     // --- 核心辅助函数 ---
 
     private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
-        // 1. 原生推门：使用 access 检查读权限 (R_OK)
-        // 这是区分“无权限”和“未设置”最权威的底层方法
-        if access(path, R_OK) != 0 {
-            let e = errno
-            if e == EACCES || e == EPERM || e == ENOENT {
-                // 在沙盒中，权限不足时系统常返回 EACCES 或伪装成 ENOENT
-                throw POSIXError(.EACCES)
-            }
-        }
-
-        // 2. 原生搜屋：只有在 access 确认能进门后，才读取 ACL
+        // 1. 先尝试直接读取 ACL
         let acl = acl_get_file(path, ACL_TYPE_EXTENDED)
         
-        // 如果 acl 为 nil 但 access 成功了，这才是真正的“未设置 ACL”
-        if acl == nil {
-            return []
+        // 2. 如果成功拿到 ACL，直接进入解析流程（不管 access，因为能拿到就说明有权）
+        if let validAcl = acl {
+            defer { acl_free(UnsafeMutableRawPointer(validAcl)) }
+            
+            var results: [ACEEntry] = []
+            var entry: acl_entry_t? = nil
+            var res = acl_get_entry(validAcl, ACL_FIRST_ENTRY.rawValue, &entry)
+            var i = 0
+            
+            while res == 0, let e = entry {
+                results.append(ACEEntry(
+                    name: resolveName(e),
+                    uuidString: getUUIDString(e),
+                    isGroup: checkIsGroup(e),
+                    type: getTagType(e),
+                    permissions: parsePermissions(e),
+                    flags: parseFlags(e),
+                    rawBitmask: getSafeRawMask(e),
+                    isInherited: checkIsInherited(e),
+                    inheritanceDepth: checkIsInherited(e) ? -1 : 0,
+                    sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
+                    index: i
+                ))
+                res = acl_get_entry(validAcl, ACL_NEXT_ENTRY.rawValue, &entry)
+                i += 1
+            }
+            return results
         }
         
-        // 3. 安全释放：拿到对象后，确保在退出作用域前释放 C 内存
-        defer { acl_free(UnsafeMutableRawPointer(acl!)) }
-        
-        // 4. 标准解析逻辑
-        var results: [ACEEntry] = []
-        var entry: acl_entry_t? = nil
-        var res = acl_get_entry(acl!, ACL_FIRST_ENTRY.rawValue, &entry)
-        var i = 0
-        
-        while res == 0, let e = entry {
-            results.append(ACEEntry(
-                name: resolveName(e),
-                uuidString: getUUIDString(e),
-                isGroup: checkIsGroup(e),
-                type: getTagType(e),
-                permissions: parsePermissions(e),
-                flags: parseFlags(e),
-                rawBitmask: getSafeRawMask(e),
-                isInherited: checkIsInherited(e),
-                inheritanceDepth: checkIsInherited(e) ? -1 : 0,
-                sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
-                index: i
-            ))
-            res = acl_get_entry(acl!, ACL_NEXT_ENTRY.rawValue, &entry)
-            i += 1
+        // 3. 如果 acl 为 nil，我们再用 POSIX 的 access 来探测原因
+        // R_OK 检查是否可读
+        if access(path, R_OK) != 0 {
+            let e = errno
+            // 如果 access 报错 13(EACCES) 或 1(EPERM)，说明是真没权限
+            if e == EACCES || e == EPERM {
+                throw POSIXError(.EACCES)
+            }
+            // 如果是 ENOENT (2)，说明路径真的不存在
+            if e == ENOENT {
+                throw POSIXError(.ENOENT)
+            }
         }
-        return results
+        
+        // 4. 如果 access 成功了（返回 0），但 acl 是 nil
+        // 结论：有访问权限，但该文件确实没设置 ACL
+        return []
     }
 
     // 安全读取权限掩码，不使用危险的内存加载
@@ -197,4 +201,3 @@ actor ACLScanner {
         }
     }
 }
-
