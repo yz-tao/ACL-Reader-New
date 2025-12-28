@@ -24,30 +24,24 @@ actor ACLScanner {
     // 递归扫描的主入口：不仅读取当前路径，还会向上追溯继承源
     static func scanWithAncestry(at path: String) async throws -> [ACEEntry] {
         
-        // --- 探针代码开始 ---
-        let testPath = "/Users/通用共享/毕业照1" // 确保路径完全准确
-        var st = stat()
-
-        // 1. 测试基础物理信息获取
-        if stat(testPath, &st) == 0 {
-            print("探针检测 - Inode: \(st.st_ino)")
-        }
-
-        // 2. 测试 ACL 获取 (这是你 App 报错的核心点)
-        let rawAcl = acl_get_file(testPath, ACL_TYPE_EXTENDED)
-        if rawAcl == nil {
-            let errorNum = errno
-            let errorDesc = String(cString: strerror(errorNum))
-            print("❌ 探针结果：内核拒绝访问！Errno: \(errorNum) (\(errorDesc))")
+        // --- 强力探针开始 ---
+            // 强制把结果通过错误抛出去，这样你一定能在 UI 界面或 Xcode 调试窗口看到
+            let testRawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
+            let currentErrno = errno
             
-            if errorNum == EPERM {
-                print("💡 实锤结论：这是 TCC/SIP 级别的内核拦截。")
+            // 如果是毕业照1，我们在这里人为制造一个“中断”，把 Errno 打印出来
+            if path.contains("毕业照1") {
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                print("🕵️ 正在深层探测【毕业照1】: \(path)")
+                if testRawAcl == nil {
+                    print("❌ 内核拦截确认！错误码: \(currentErrno) - \(String(cString: strerror(currentErrno)))")
+                } else {
+                    print("✅ 内核通过了访问。")
+                    acl_free(UnsafeMutableRawPointer(testRawAcl!))
+                }
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             }
-        } else {
-            print("✅ 探针结果：奇怪，代码层级竟然可以访问。")
-            acl_free(UnsafeMutableRawPointer(rawAcl!))
-        }
-        // --- 探针代码结束 ---
+            // --- 强力探针结束 ---
         
         
         var finalEntries = try fetchRawEntries(at: path, depth: 0)
