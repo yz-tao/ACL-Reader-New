@@ -8,173 +8,180 @@
 import Foundation
 import Darwin
 
+// --- 【新增：匹配强度策略】 ---
+enum MatchGrade {
+    case strict      // 第一阶段：位全等匹配（严谨）
+    case compatible // 第二阶段：子集包含匹配（解决权限缩减变异）
+}
+
 actor ACLScanner {
     
-    // --- 核心加固：内存托管包装类 (RAII 模式) ---
-    // 逻辑：利用 Swift 类生命周期管理 ARC 引用计数，确保 C 指针在对象销毁时自动触发析构释放。
     private class ManagedACL {
         let pointer: acl_t
         init(_ p: acl_t) { self.pointer = p }
-        deinit {
-            // 当 ManagedACL 实例引用计数归零时，自动执行洗手程序
-            acl_free(UnsafeMutableRawPointer(pointer))
-        }
+        deinit { acl_free(UnsafeMutableRawPointer(pointer)) }
     }
 
-    // 递归扫描的主入口：不仅读取当前路径，还会向上追溯继承源
+    // --- 【重构后的主函数】 ---
     static func scanWithAncestry(at path: String) async throws -> [ACEEntry] {
-        
-        // --- 强力探针开始 ---
-            // 强制把结果通过错误抛出去，这样你一定能在 UI 界面或 Xcode 调试窗口看到
-            let testRawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
-            let currentErrno = errno
-            
-            // 如果是毕业照1，我们在这里人为制造一个“中断”，把 Errno 打印出来
-            if path.contains("毕业照1") {
-                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                print("🕵️ 正在深层探测【毕业照1】: \(path)")
-                if testRawAcl == nil {
-                    print("❌ 内核拦截确认！错误码: \(currentErrno) - \(String(cString: strerror(currentErrno)))")
-                } else {
-                    print("✅ 内核通过了访问。")
-                    acl_free(UnsafeMutableRawPointer(testRawAcl!))
-                }
-                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            }
-            // --- 强力探针结束 ---
-        
-        
+        // 1. 获取初始条目
         var finalEntries = try fetchRawEntries(at: path, depth: 0)
         let inheritedIndices = finalEntries.indices.filter { finalEntries[$0].isInherited }
-        
-        // 如果没有继承项，直接返回结果
         if inheritedIndices.isEmpty { return finalEntries }
         
-        var currentPath = path
-        var currentDepth = 1
+        // --- 【第一阶段：严谨扫描】 ---
+        // 逻辑：寻找完全相等的源头。如果是“毕业照1”中的变异条目，此处会因为位不匹配而跳过。
+        await performClimb(for: &finalEntries, startPath: path, grade: .strict)
         
-        // --- 核心加固：带隐私保护的物理路径守卫 ---
-        // 逻辑：仅在内存中存储物理 ID 的哈希值，任务结束自动销毁。
-        var visitedNodeHashes = Set<Int>()
+        // --- 【第二阶段：补偿扫描】 ---
+        // 逻辑：检查是否仍有未找到源头的继承项。如果有，启动子集匹配。
+        let orphansExist = finalEntries.contains { $0.isInherited && $0.inheritanceDepth == -1 }
         
-        // 登记起始路径的物理身份指纹
-        if let rootID = getFileSystemIdentifier(for: path) {
-            visitedNodeHashes.insert(rootID)
+        if orphansExist {
+            print("💡 发现权限缩减项，启动第二阶段补偿扫描...")
+            // 补偿扫描会利用子集匹配，在爬到 /Users 之前，在“通用共享”处成功收网并 break 循环。
+            await performClimb(for: &finalEntries, startPath: path, grade: .compatible)
         }
         
-        // 向上爬升（限制最高64层以防万一）
-        // --- 在新分支 Sandbox-Refactor 中重构此循环 ---
-        while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
-            
-            // 物理守卫逻辑维持不变
-            guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
-            if visitedNodeHashes.contains(currentNodeID) { break }
-            visitedNodeHashes.insert(currentNodeID)
-            
-            // --- 核心改进：优雅降级逻辑 ---
-            let parentEntries: [ACEEntry]
-            do {
-                // 尝试获取父目录 ACL
-                parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
-            } catch {
-                // 关键点：如果在溯源过程中遇到权限问题（EACCES/EPERM），不再抛出错误。
-                // 我们选择优雅地“就地解散”，保留目前已有的发现。
-                print("溯源至 \(parentPath) 时触发系统限制: \(error.localizedDescription)")
-                break
-            }
-            
-            var allConfirmed = true
-            for idx in inheritedIndices {
-                if finalEntries[idx].inheritanceDepth == -1 {
-                    if let _ = findExplicitSource(for: finalEntries[idx], in: parentEntries) {
-                        finalEntries[idx].inheritanceDepth = currentDepth
-                        finalEntries[idx].sourcePath = parentPath
-                    } else {
-                        allConfirmed = false
-                    }
-                }
-            }
-            
-            if allConfirmed { break }
-            currentPath = parentPath
-            currentDepth += 1
-        }
-        
-        // 兜底：如果溯源到顶还没找到，标记为未知
-        for i in inheritedIndices where finalEntries[i].inheritanceDepth == -1 {
+        // 兜底处理：最终依然无法追溯的条目
+        for i in finalEntries.indices where finalEntries[i].isInherited && finalEntries[i].inheritanceDepth == -1 {
             finalEntries[i].inheritanceDepth = 999
-            finalEntries[i].sourcePath = "远程或未知源头"
+            finalEntries[i].sourcePath = "系统受限或未知源头"
         }
         
         return finalEntries
     }
 
-    // --- 核心辅助函数 ---
+    // --- 【新增：封装的路径爬升引擎】 ---
+    private static func performClimb(for entries: inout [ACEEntry], startPath: String, grade: MatchGrade) async {
+        var currentPath = startPath
+        var currentDepth = 1
+        var visitedNodeHashes = Set<Int>() // 物理 Inode 守卫
 
-    private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
-            let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
-            
-            if let validRawAcl = rawAcl {
-                let aclManaged = ManagedACL(validRawAcl)
-                let aclPtr = aclManaged.pointer
-                
-                var results: [ACEEntry] = []
-                var entry: acl_entry_t? = nil
-                var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
-                var i = 0
-                
-                while res == 0, let e = entry {
-                    results.append(ACEEntry(
-                        name: resolveName(e),
-                        uuidString: getUUIDString(e),
-                        isGroup: checkIsGroup(e),
-                        type: getTagType(e),
-                        permissions: parsePermissions(e),
-                        flags: parseFlags(e),
-                        rawBitmask: getSafeRawMask(e),
-                        isInherited: checkIsInherited(e),
-                        inheritanceDepth: checkIsInherited(e) ? -1 : 0,
-                        sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
-                        index: i
-                    ))
-                    res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
-                    i += 1
-                }
-                return results
-            }
-            
-            // --- 文件夹 B 拒绝访问的精准诊断逻辑 ---
-            if access(path, R_OK) != 0 {
-                let err = errno
-                if err == EPERM {
-                    // EPERM 通常代表 Operation not permitted，常见于 SIP 保护或 TCC 硬拦截
-                    throw CustomError.systemRestricted(path)
-                } else if err == EACCES {
-                    // EACCES 代表 Permission denied，可能是 POSIX 000 或沙盒未授权
-                    if isPrivacySensitivePath(path) {
-                        throw CustomError.privacyRestricted(path)
-                    }
-                    throw POSIXError(.EACCES)
-                } else if err == ENOENT {
-                    throw POSIXError(.ENOENT)
-                }
-            }
-            return []
+        if let rootID = getFileSystemIdentifier(for: startPath) {
+            visitedNodeHashes.insert(rootID)
         }
 
-        // 判断是否属于 TCC 隐私敏感区域（如 Documents, Desktop, Downloads）
-    private static func isPrivacySensitivePath(_ path: String) -> Bool {
-        let sensitivePatterns = ["/Documents", "/Desktop", "/Downloads", "/Library/Mail", "/Library/Messages"]
-        // 修正：使用 $0 代表当前遍历到的字符串模式
-        return sensitivePatterns.contains { path.contains($0) }
+        while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
+            
+            // A. Inode 守卫防止死循环
+            guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
+            if visitedNodeHashes.contains(currentNodeID) { break }
+            visitedNodeHashes.insert(currentNodeID)
+            
+            // B. 获取父目录权限
+            let parentEntries: [ACEEntry]
+            do {
+                parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
+            } catch {
+                // 核心加固：遇到 EPERM/EACCES 时优雅中断当前模式，不向上传递错误
+                print("🛑 溯源中断于 [\(parentPath)]")
+                break
+            }
+            
+            var allFoundThisPass = true
+            
+            // C. 匹配逻辑
+            for idx in entries.indices {
+                // 只处理【是继承项】且【尚未找对源头】的条目
+                if entries[idx].isInherited && entries[idx].inheritanceDepth == -1 {
+                    if let _ = findExplicitSource(for: entries[idx], in: parentEntries, grade: grade) {
+                        entries[idx].inheritanceDepth = currentDepth
+                        entries[idx].sourcePath = parentPath
+                        
+                        // 逻辑记录：如果是补偿模式找回的，记录下变异状态
+                        if grade == .compatible {
+                            entries[idx].isHeuristicMatch = true
+                            entries[idx].matchStatus = "子集匹配（权限缩减）"
+                        } else {
+                            entries[idx].matchStatus = "全等匹配"
+                        }
+                    } else {
+                        allFoundThisPass = false
+                    }
+                }
+            }
+            
+            // 如果本轮涉及的所有孤儿都找齐了，提前退出循环
+            if allFoundThisPass { break }
+            
+            currentPath = parentPath
+            currentDepth += 1
+        }
     }
 
-        private static func getFileSystemIdentifier(for path: String) -> Int? {
-            var st = stat()
-            guard stat(path, &st) == 0 else { return nil }
-            return "\(st.st_dev)-\(st.st_ino)".hashValue
+    // --- 【重构：带强度选择的匹配函数】 ---
+    private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry], grade: MatchGrade) -> ACEEntry? {
+        parentEntries.first { parent in
+            // 身份一致性是所有匹配的底线（Trustee + Type）
+            guard !parent.isInherited,
+                  parent.uuidString == target.uuidString,
+                  parent.type == target.type else { return false }
+            
+            let childMask = target.rawBitmask
+            let parentMask = parent.rawBitmask
+            
+            switch grade {
+            case .strict:
+                // 第一阶段：位全等
+                return childMask == parentMask
+            case .compatible:
+                // 第二阶段：子集包含。
+                // 逻辑：(childMask & parentMask) == childMask 证明父掩码涵盖了子项所有位
+                return (childMask & parentMask) == childMask
+            }
         }
+    }
 
+    // --- 以下保持原有 fetchRawEntries 及辅助函数逻辑不变，增加 Inode 获取支持 ---
+
+    private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
+        let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
+        
+        if let validRawAcl = rawAcl {
+            let aclManaged = ManagedACL(validRawAcl)
+            let aclPtr = aclManaged.pointer
+            var results: [ACEEntry] = []
+            var entry: acl_entry_t? = nil
+            var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
+            var i = 0
+            
+            while res == 0, let e = entry {
+                let inherited = checkIsInherited(e)
+                results.append(ACEEntry(
+                    name: resolveName(e),
+                    uuidString: getUUIDString(e),
+                    isGroup: checkIsGroup(e),
+                    type: getTagType(e),
+                    permissions: parsePermissions(e),
+                    flags: parseFlags(e),
+                    rawBitmask: getSafeRawMask(e),
+                    isInherited: inherited,
+                    inheritanceDepth: inherited ? -1 : 0,
+                    sourcePath: inherited ? "正在溯源..." : path,
+                    index: i
+                ))
+                res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
+                i += 1
+            }
+            return results
+        }
+        
+        // 这里的访问检查维持原有的 EPERM/EACCES 精准诊断
+        if access(path, R_OK) != 0 {
+            let err = errno
+            if err == EPERM { throw CustomError.systemRestricted(path) }
+            if err == EACCES { throw CustomError.privacyRestricted(path) }
+        }
+        return []
+    }
+
+    private static func getFileSystemIdentifier(for path: String) -> Int? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        // 使用 dev + inode 的组合作为物理唯一标识
+        return "\(st.st_dev)-\(st.st_ino)".hashValue
+    }
         private static func resolveName(_ entry: acl_entry_t) -> String {
             guard let q = acl_get_qualifier(entry) else { return "未知" }
             defer { acl_free(q) }

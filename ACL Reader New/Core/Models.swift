@@ -67,5 +67,9 @@ struct ACEEntry: Identifiable, Equatable, Sendable {
     var inheritanceDepth: Int   // 0: 本地定义, 1+: 溯源深度, 999: 未知
     var sourcePath: String
     let index: Int
+    
+    // --- 【新增插入点】 ---
+    var isHeuristicMatch: Bool = false // 标记是否通过“子集匹配”补偿找回
+    var matchStatus: String = ""       // 存储匹配状态描述（用于调试或UI展示）
 }
 
