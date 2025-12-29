@@ -71,5 +71,7 @@ struct ACEEntry: Identifiable, Equatable, Sendable {
     // --- 【新增插入点】 ---
     var isHeuristicMatch: Bool = false // 标记是否通过“子集匹配”补偿找回
     var matchStatus: String = ""       // 存储匹配状态描述（用于调试或UI展示）
+    // --- 【最小化新增：标记是否因拦截而中断】 ---
+    var isSystemInterrupted: Bool = false
 }
 

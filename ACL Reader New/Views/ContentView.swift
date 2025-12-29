@@ -121,15 +121,25 @@ struct ACERowView: View {
             HStack {
                 if entry.isInherited {
                     HStack(spacing: 4) {
-                        Image(systemName: "link")
-                        Text("继承自: \(entry.sourcePath)")
+                        // --- 【修改：差异化显示状态】 ---
+                        // 1. 如果被拦截显示红色盾牌，2. 如果是子集匹配显示橙色链接，3. 正常显示灰色
+                        Image(systemName: entry.isSystemInterrupted ? "exclamationmark.shield.fill" : "link")
+                            .foregroundColor(entry.isSystemInterrupted ? .red : (entry.isHeuristicMatch ? .orange : .secondary))
+                                    
+                        Text(entry.isHeuristicMatch ? "兼容继承自: \(entry.sourcePath)" : "继承自: \(entry.sourcePath)")
+                            .foregroundColor(entry.isSystemInterrupted ? .red : (entry.isHeuristicMatch ? .orange : .secondary))
+                                    
+                        if entry.isHeuristicMatch {
+                            Text("(权限位缩减)")
+                                .font(.system(size: 8))
+                                .foregroundColor(.orange)
+                        }
                     }
                 } else {
                     Text("本地显式定义")
                 }
-                
+                            
                 Spacer()
-                
                 Text("Mask: 0x\(String(entry.rawBitmask, radix: 16).uppercased())")
             }
             .font(.system(size: 9, design: .monospaced))

@@ -74,9 +74,13 @@ actor ACLScanner {
             do {
                 parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
             } catch {
-                // 核心加固：遇到 EPERM/EACCES 时优雅中断当前模式，不向上传递错误
-                print("🛑 溯源中断于 [\(parentPath)]")
-                break
+                // --- 【修改：在中断时记录当前路径并标记红色警告】 ---
+                        for i in entries.indices where entries[i].isInherited && entries[i].inheritanceDepth == -1 {
+                            entries[i].sourcePath = "中断于: \(URL(fileURLWithPath: parentPath).lastPathComponent) (系统受限)"
+                            entries[i].isSystemInterrupted = true
+                        }
+                        print("🛑 溯源中断于 [\(parentPath)]")
+                        break
             }
             
             var allFoundThisPass = true
