@@ -17,19 +17,19 @@ enum ACLPermission: String, CaseIterable, Identifiable, Sendable {
     
     var bitmask: UInt32 {
         switch self {
-        case .readData: return 0x00000001
-        case .writeData: return 0x00000002
-        case .execute: return 0x00000004
-        case .delete: return 0x00000008
-        case .appendData: return 0x00000010
-        case .deleteChild: return 0x00000020
-        case .readAttr: return 0x00000040
-        case .writeAttr: return 0x00000080
-        case .readExAttr: return 0x00000100
-        case .writeExAttr: return 0x00000200
-        case .readSecurity: return 0x00000400
-        case .writeSecurity: return 0x00000800
-        case .changeOwner: return 0x00001000
+        case .readData: return 0x00000002          // ACL_READ_DATA
+        case .writeData: return 0x00000004         // ACL_WRITE_DATA
+        case .execute: return 0x00000008           // ACL_EXECUTE
+        case .delete: return 0x00000010            // ACL_DELETE
+        case .appendData: return 0x00000020        // ACL_APPEND_DATA
+        case .deleteChild: return 0x00000040       // ACL_DELETE_CHILD
+        case .readAttr: return 0x00000080          // ACL_READ_ATTRIBUTES
+        case .writeAttr: return 0x00000100         // ACL_WRITE_ATTRIBUTES
+        case .readExAttr: return 0x00000200        // ACL_READ_EXTATTRIBUTES
+        case .writeExAttr: return 0x00000400       // ACL_WRITE_EXTATTRIBUTES
+        case .readSecurity: return 0x00000800      // ACL_READ_SECURITY
+        case .writeSecurity: return 0x00001000     // ACL_WRITE_SECURITY
+        case .changeOwner: return 0x00002000       // ACL_CHANGE_OWNER
         }
     }
     var id: String { self.rawValue }
@@ -44,10 +44,10 @@ enum ACEFlag: String, CaseIterable, Identifiable, Sendable {
     
     var bitmask: UInt32 {
         switch self {
-        case .fileInherit: return 0x00000010      // ACL_ENTRY_FILE_INHERIT
-        case .dirInherit: return 0x00000020       // ACL_ENTRY_DIRECTORY_INHERIT
-        case .limitInherit: return 0x00000040     // ACL_ENTRY_LIMIT_INHERIT
-        case .onlyInherit: return 0x00000080      // ACL_ENTRY_ONLY_INHERIT
+        case .fileInherit: return 0x00000020      // ACL_ENTRY_FILE_INHERIT (原 0x10 是错的，那是 INHERITED)
+        case .dirInherit: return 0x00000040       // ACL_ENTRY_DIRECTORY_INHERIT
+        case .limitInherit: return 0x00000080     // ACL_ENTRY_LIMIT_INHERIT
+        case .onlyInherit: return 0x00000100      // ACL_ENTRY_ONLY_INHERIT
         }
     }
     var id: String { self.rawValue }
