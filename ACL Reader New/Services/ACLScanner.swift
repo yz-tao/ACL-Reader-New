@@ -262,14 +262,6 @@ actor ACLScanner {
         return (parent == path) ? nil : parent
     }
 
-    private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry]) -> ACEEntry? {
-        parentEntries.first {
-            !$0.isInherited &&
-            $0.uuidString == target.uuidString &&
-            $0.type == target.type &&
-            $0.rawBitmask == target.rawBitmask
-        }
-    }
 }
 enum CustomError: LocalizedError {
     case systemRestricted(String)
