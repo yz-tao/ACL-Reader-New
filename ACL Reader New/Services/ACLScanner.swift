@@ -3,13 +3,13 @@
 //  ACL Reader New
 //
 //  Created by tyz on 12/27/25.
-//  Fixed by CodeX on 12/30/25.
+//  Refactored by CodeX on 12/30/25.
 //
 
 import Foundation
 import Darwin
 
-// --- 【核心修复】遗传资格验证器 ---
+// 遗传资格验证器
 private struct InheritanceValidator {
     let isTargetDirectory: Bool
     
@@ -22,28 +22,20 @@ private struct InheritanceValidator {
         }
     }
     
-    // 判断父项是否有资格遗传
     func canInherit(parent: ACEEntry, depth: Int) -> Bool {
-        // 【修复逻辑】
-        // 不再使用 rawBitmask 检查标志，因为 0x20 既是 FileInherit 又是 AppendData (AddSubdirectory)。
-        // 使用已经解析好的 flags 字符串数组是绝对安全的。
+        // [修改] parent.flagMask (短名) & ACEFlag.flagBitmask (长名)
+        // 逻辑清晰：用 Entry 的实际值 去匹配 Flag 的定义值
         
-        // 注意：这里的字符串必须与 Models.swift 中 ACEFlag 的 rawValue 保持一致
-        let flags = Set(parent.flags)
-        
-        let hasFI = flags.contains("遗传至文件") // 对应 ACEFlag.fileInherit
-        let hasDI = flags.contains("遗传至目录") // 对应 ACEFlag.dirInherit
+        let hasFI = (parent.flagMask & ACEFlag.fileInherit.flagBitmask) != 0
+        let hasDI = (parent.flagMask & ACEFlag.dirInherit.flagBitmask) != 0
         
         if isTargetDirectory {
-            // 目标是目录，父项必须有 DI
             guard hasDI else { return false }
         } else {
-            // 目标是文件，父项必须有 FI
             guard hasFI else { return false }
         }
         
-        // 深度检查
-        let hasLI = flags.contains("不深层遗传") // 对应 ACEFlag.limitInherit
+        let hasLI = (parent.flagMask & ACEFlag.limitInherit.flagBitmask) != 0
         if hasLI && depth > 1 { return false }
         
         return true
@@ -139,18 +131,15 @@ actor ACLScanner {
 
     private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry], grade: MatchGrade, validator: InheritanceValidator, currentDepth: Int) -> ACEEntry? {
         parentEntries.first { parent in
-            // 1. 身份一致性
             guard !parent.isInherited,
                   parent.uuidString == target.uuidString,
                   parent.type == target.type else { return false }
             
-            // 2. 遗传资格验证 (使用 Flags 字符串)
-            // 这里会正确识别 B 没有 "遗传至文件" 字符串，从而跳过 B
             guard validator.canInherit(parent: parent, depth: currentDepth) else { return false }
             
-            // 3. 权限内容比对 (使用 RawMask，仅代表权限)
-            let childMask = target.rawBitmask
-            let parentMask = parent.rawBitmask
+            // [修改] 使用 permissionMask (短名)
+            let childMask = target.permissionMask
+            let parentMask = parent.permissionMask
             
             switch grade {
             case .strict:
@@ -160,8 +149,6 @@ actor ACLScanner {
             }
         }
     }
-
-    // --- 底层封装 (回滚到最初的稳健版本) ---
 
     private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
         let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
@@ -181,9 +168,9 @@ actor ACLScanner {
                     type: getTagType(e),
                     permissions: parsePermissions(e),
                     flags: parseFlags(e),
-                    // 【关键回滚】: 这里的 Mask 只包含 Permission，不再混入 Flags
-                    // 这样 MatchGrade 的比对就是纯粹的权限比对，不会受 Flags 干扰
-                    rawBitmask: getSafeRawMask(e),
+                    // [修改] 使用函数计算并填入 Mask (短名)
+                    permissionMask: getPermissionMask(e),
+                    flagMask: getFlagMask(e),
                     isInherited: inherited,
                     inheritanceDepth: inherited ? -1 : 0,
                     sourcePath: inherited ? "正在溯源..." : path,
@@ -202,24 +189,55 @@ actor ACLScanner {
         return []
     }
 
-    // 此函数只收集权限位，保证了 findExplicitSource 中比较的是纯粹的“访问权限”
-    private static func getSafeRawMask(_ entry: acl_entry_t) -> UInt32 {
+    // [修改] 提取函数使用 permissionBitmask (长名)
+    private static func getPermissionMask(_ entry: acl_entry_t) -> UInt32 {
         var ps: acl_permset_t? = nil
         acl_get_permset(entry, &ps)
         guard let validPs = ps else { return 0 }
-        var fullMask: UInt32 = 0
+        var mask: UInt32 = 0
         for perm in ACLPermission.allCases {
-            // 注意：这里依赖 Models.swift 中的 bitmask，即使它是错的也没关系
-            // 只要 Parent 和 Child 都是用同一套错误的 bitmask 生成的，它们依然相等 (Consistent)
-            if acl_get_perm_np(validPs, acl_perm_t(perm.bitmask)) == 1 {
-                fullMask |= perm.bitmask
+            if acl_get_perm_np(validPs, acl_perm_t(perm.permissionBitmask)) == 1 {
+                mask |= perm.permissionBitmask
             }
         }
-        return fullMask
+        return mask
+    }
+    
+    // [修改] 提取函数使用 flagBitmask (长名)
+    private static func getFlagMask(_ entry: acl_entry_t) -> UInt32 {
+        var fs: acl_flagset_t? = nil
+        acl_get_flagset_np(UnsafeMutableRawPointer(entry), &fs)
+        guard let validFs = fs else { return 0 }
+        var mask: UInt32 = 0
+        for flag in ACEFlag.allCases {
+            if acl_get_flag_np(validFs, acl_flag_t(flag.flagBitmask)) == 1 {
+                mask |= flag.flagBitmask
+            }
+        }
+        return mask
+    }
+    
+    // --- 辅助函数同步更新 ---
+
+    private static func parsePermissions(_ entry: acl_entry_t) -> [String] {
+        var ps: acl_permset_t? = nil
+        acl_get_permset(entry, &ps)
+        guard let validPs = ps else { return [] }
+        return ACLPermission.allCases.compactMap { perm in
+            acl_get_perm_np(validPs, acl_perm_t(perm.permissionBitmask)) == 1 ? perm.rawValue : nil
+        }
     }
 
-    // --- 以下辅助函数保持不变 ---
-    
+    private static func parseFlags(_ entry: acl_entry_t) -> [String] {
+        var fs: acl_flagset_t? = nil
+        acl_get_flagset_np(UnsafeMutableRawPointer(entry), &fs)
+        guard let validFs = fs else { return [] }
+        return ACEFlag.allCases.compactMap { flag in
+            acl_get_flag_np(validFs, acl_flag_t(flag.flagBitmask)) == 1 ? flag.rawValue : nil
+        }
+    }
+
+    // (其他辅助函数保持不变)
     private static func getFileSystemIdentifier(for path: String) -> Int? {
         var st = stat()
         guard stat(path, &st) == 0 else { return nil }
@@ -238,24 +256,6 @@ actor ACLScanner {
             if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
         }
         return "ID: \(id)"
-    }
-
-    private static func parsePermissions(_ entry: acl_entry_t) -> [String] {
-        var ps: acl_permset_t? = nil
-        acl_get_permset(entry, &ps)
-        guard let validPs = ps else { return [] }
-        return ACLPermission.allCases.compactMap { perm in
-            acl_get_perm_np(validPs, acl_perm_t(perm.bitmask)) == 1 ? perm.rawValue : nil
-        }
-    }
-
-    private static func parseFlags(_ entry: acl_entry_t) -> [String] {
-        var fs: acl_flagset_t? = nil
-        acl_get_flagset_np(UnsafeMutableRawPointer(entry), &fs)
-        guard let validFs = fs else { return [] }
-        return ACEFlag.allCases.compactMap { flag in
-            acl_get_flag_np(validFs, acl_flag_t(flag.bitmask)) == 1 ? flag.rawValue : nil
-        }
     }
 
     private static func checkIsInherited(_ entry: acl_entry_t) -> Bool {

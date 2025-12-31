@@ -3,12 +3,12 @@
 //  ACL Reader New
 //
 //  Created by tyz on 12/27/25.
+//  Refactored by CodeX on 12/30/25.
 //
 
 import SwiftUI
 
 struct ContentView: View {
-    // 接入我们在上一步创建的调度员 (ViewModel)
     @StateObject private var viewModel = ScannerViewModel()
 
     var body: some View {
@@ -99,7 +99,7 @@ struct ACERowView: View {
                     .cornerRadius(4)
             }
             
-            // 第二行：具体权限位（使用流式显示感官更好）
+            // 第二行：具体权限位
             if !entry.permissions.isEmpty {
                 Text(entry.permissions.joined(separator: "  •  "))
                     .font(.system(size: 11))
@@ -107,7 +107,7 @@ struct ACERowView: View {
                     .lineLimit(2)
             }
             
-            // 第三行：遗传/标志位（蓝色高亮，这是专业 ACL 工具的标志）
+            // 第三行：遗传/标志位
             if !entry.flags.isEmpty {
                 HStack {
                     Image(systemName: "arrow.turn.down.right")
@@ -121,8 +121,6 @@ struct ACERowView: View {
             HStack {
                 if entry.isInherited {
                     HStack(spacing: 4) {
-                        // --- 【修改：差异化显示状态】 ---
-                        // 1. 如果被拦截显示红色盾牌，2. 如果是子集匹配显示橙色链接，3. 正常显示灰色
                         Image(systemName: entry.isSystemInterrupted ? "exclamationmark.shield.fill" : "link")
                             .foregroundColor(entry.isSystemInterrupted ? .red : (entry.isHeuristicMatch ? .orange : .secondary))
                                     
@@ -140,7 +138,8 @@ struct ACERowView: View {
                 }
                             
                 Spacer()
-                Text("Mask: 0x\(String(entry.rawBitmask, radix: 16).uppercased())")
+                // [修改] 显示 permissionMask (短名)
+                Text("Mask: 0x\(String(entry.permissionMask, radix: 16).uppercased())")
             }
             .font(.system(size: 9, design: .monospaced))
             .foregroundColor(.secondary)
@@ -148,4 +147,3 @@ struct ACERowView: View {
         .padding(.vertical, 8)
     }
 }
-
