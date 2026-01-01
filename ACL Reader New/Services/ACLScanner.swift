@@ -33,6 +33,11 @@ private struct InheritanceValidator {
             guard hasDI else { return false }
         } else {
             guard hasFI else { return false }
+            // 该权限必须具备 directory_inherit (DI) 才能穿透中间的目录层级到达这里。
+            // 如果没有 DI，这个权限在半路（父目录）就已经断掉了。
+            if depth > 1 {
+                guard hasDI else { return false }
+            }
         }
         
         let hasLI = (parent.flagMask & ACEFlag.limitInherit.flagBitmask) != 0
