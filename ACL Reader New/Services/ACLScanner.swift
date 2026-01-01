@@ -3,108 +3,169 @@
 //  ACL Reader New
 //
 //  Created by tyz on 12/27/25.
+//  Refactored by CodeX on 12/30/25.
 //
 
 import Foundation
 import Darwin
 
+// 遗传资格验证器
+private struct InheritanceValidator {
+    let isTargetDirectory: Bool
+    
+    init(at path: String) {
+        var st = stat()
+        if stat(path, &st) == 0 {
+            self.isTargetDirectory = (st.st_mode & S_IFMT) == S_IFDIR
+        } else {
+            self.isTargetDirectory = false
+        }
+    }
+    
+    func canInherit(parent: ACEEntry, depth: Int) -> Bool {
+        // [修改] parent.flagMask (短名) & ACEFlag.flagBitmask (长名)
+        // 逻辑清晰：用 Entry 的实际值 去匹配 Flag 的定义值
+        
+        let hasFI = (parent.flagMask & ACEFlag.fileInherit.flagBitmask) != 0
+        let hasDI = (parent.flagMask & ACEFlag.dirInherit.flagBitmask) != 0
+        
+        if isTargetDirectory {
+            guard hasDI else { return false }
+        } else {
+            guard hasFI else { return false }
+            // 该权限必须具备 directory_inherit (DI) 才能穿透中间的目录层级到达这里。
+            // 如果没有 DI，这个权限在半路（父目录）就已经断掉了。
+            if depth > 1 {
+                guard hasDI else { return false }
+            }
+        }
+        
+        let hasLI = (parent.flagMask & ACEFlag.limitInherit.flagBitmask) != 0
+        if hasLI && depth > 1 { return false }
+        
+        return true
+    }
+}
+
+enum MatchGrade {
+    case strict
+    case compatible
+}
+
 actor ACLScanner {
     
-    // --- 核心加固：内存托管包装类 (RAII 模式) ---
-    // 逻辑：利用 Swift 类生命周期管理 ARC 引用计数，确保 C 指针在对象销毁时自动触发析构释放。
     private class ManagedACL {
         let pointer: acl_t
         init(_ p: acl_t) { self.pointer = p }
-        deinit {
-            // 当 ManagedACL 实例引用计数归零时，自动执行洗手程序
-            acl_free(UnsafeMutableRawPointer(pointer))
-        }
+        deinit { acl_free(UnsafeMutableRawPointer(pointer)) }
     }
 
-    // 递归扫描的主入口：不仅读取当前路径，还会向上追溯继承源
     static func scanWithAncestry(at path: String) async throws -> [ACEEntry] {
         var finalEntries = try fetchRawEntries(at: path, depth: 0)
         let inheritedIndices = finalEntries.indices.filter { finalEntries[$0].isInherited }
-        
-        // 如果没有继承项，直接返回结果
         if inheritedIndices.isEmpty { return finalEntries }
         
-        var currentPath = path
-        var currentDepth = 1
+        let validator = InheritanceValidator(at: path)
         
-        // --- 核心加固：带隐私保护的物理路径守卫 ---
-        // 逻辑：仅在内存中存储物理 ID 的哈希值，任务结束自动销毁。
-        var visitedNodeHashes = Set<Int>()
+        await performClimb(for: &finalEntries, startPath: path, grade: .strict, validator: validator)
         
-        // 登记起始路径的物理身份指纹
-        if let rootID = getFileSystemIdentifier(for: path) {
-            visitedNodeHashes.insert(rootID)
+        let orphansExist = finalEntries.contains { $0.isInherited && $0.inheritanceDepth == -1 }
+        if orphansExist {
+            print("💡 发现权限缩减项，启动第二阶段补偿扫描...")
+            await performClimb(for: &finalEntries, startPath: path, grade: .compatible, validator: validator)
         }
         
-        // 向上爬升（限制最高64层以防万一）
-        while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
-            
-            // 1. 物理拓扑校验 (Inode Guard)
-            // 获取父目录的物理身份证，若无法获取则中止溯源
-            guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
-            
-            // 查重逻辑：
-            // a) 如果哈希值已存在，说明路径存在逻辑回环（软链接死循环），立即停止。
-            // b) 同时也涵盖了磁盘挂载点变更检测。
-            if visitedNodeHashes.contains(currentNodeID) {
-                break
-            }
-            visitedNodeHashes.insert(currentNodeID)
-            
-            // 2. 执行扫描（维持当前逻辑：若在此处撞到沙盒墙，则抛出错误并由 ViewModel 显示引导）
-            let parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
-            
-            var allConfirmed = true
-            for idx in inheritedIndices {
-                if finalEntries[idx].inheritanceDepth == -1 {
-                    // 使用指纹匹配逻辑寻找显式源头
-                    if let _ = findExplicitSource(for: finalEntries[idx], in: parentEntries) {
-                        finalEntries[idx].inheritanceDepth = currentDepth
-                        finalEntries[idx].sourcePath = parentPath
-                    } else {
-                        // 这一层没找到，需要继续向上
-                        allConfirmed = false
-                    }
-                }
-            }
-            
-            if allConfirmed { break }
-            currentPath = parentPath
-            currentDepth += 1
-        }
-        
-        // 兜底：如果溯源到顶还没找到，标记为未知
-        for i in inheritedIndices where finalEntries[i].inheritanceDepth == -1 {
+        for i in finalEntries.indices where finalEntries[i].isInherited && finalEntries[i].inheritanceDepth == -1 {
             finalEntries[i].inheritanceDepth = 999
-            finalEntries[i].sourcePath = "远程或未知源头"
+            finalEntries[i].sourcePath = "系统受限或未知源头"
         }
         
         return finalEntries
     }
 
-    // --- 核心辅助函数 ---
+    private static func performClimb(for entries: inout [ACEEntry], startPath: String, grade: MatchGrade, validator: InheritanceValidator) async {
+        var currentPath = startPath
+        var currentDepth = 1
+        var visitedNodeHashes = Set<Int>()
+
+        if let rootID = getFileSystemIdentifier(for: startPath) {
+            visitedNodeHashes.insert(rootID)
+        }
+
+        while let parentPath = getParentDirectory(of: currentPath), parentPath != "/", currentDepth <= 64 {
+            guard let currentNodeID = getFileSystemIdentifier(for: parentPath) else { break }
+            if visitedNodeHashes.contains(currentNodeID) { break }
+            visitedNodeHashes.insert(currentNodeID)
+            
+            let parentEntries: [ACEEntry]
+            do {
+                parentEntries = try fetchRawEntries(at: parentPath, depth: currentDepth)
+            } catch {
+                for i in entries.indices where entries[i].isInherited && entries[i].inheritanceDepth == -1 {
+                    entries[i].sourcePath = "中断于: \(URL(fileURLWithPath: parentPath).lastPathComponent) (系统受限)"
+                    entries[i].isSystemInterrupted = true
+                }
+                break
+            }
+            
+            var allFoundThisPass = true
+            
+            for idx in entries.indices {
+                if entries[idx].isInherited && entries[idx].inheritanceDepth == -1 {
+                    if let _ = findExplicitSource(for: entries[idx], in: parentEntries, grade: grade, validator: validator, currentDepth: currentDepth) {
+                        entries[idx].inheritanceDepth = currentDepth
+                        entries[idx].sourcePath = parentPath
+                        
+                        if grade == .compatible {
+                            entries[idx].isHeuristicMatch = true
+                            entries[idx].matchStatus = "子集匹配（权限缩减）"
+                        } else {
+                            entries[idx].matchStatus = "全等匹配"
+                        }
+                    } else {
+                        allFoundThisPass = false
+                    }
+                }
+            }
+            
+            if allFoundThisPass { break }
+            currentPath = parentPath
+            currentDepth += 1
+        }
+    }
+
+    private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry], grade: MatchGrade, validator: InheritanceValidator, currentDepth: Int) -> ACEEntry? {
+        parentEntries.first { parent in
+            guard !parent.isInherited,
+                  parent.uuidString == target.uuidString,
+                  parent.type == target.type else { return false }
+            
+            guard validator.canInherit(parent: parent, depth: currentDepth) else { return false }
+            
+            // [修改] 使用 permissionMask (短名)
+            let childMask = target.permissionMask
+            let parentMask = parent.permissionMask
+            
+            switch grade {
+            case .strict:
+                return childMask == parentMask
+            case .compatible:
+                return (childMask & parentMask) == childMask
+            }
+        }
+    }
 
     private static func fetchRawEntries(at path: String, depth: Int) throws -> [ACEEntry] {
-        // 尝试获取文件系统的扩展 ACL
         let rawAcl = acl_get_file(path, ACL_TYPE_EXTENDED)
-        
-        // 内存托管：一旦拿到原始指针，立即交给托管类处理
         if let validRawAcl = rawAcl {
-            // 只要 aclManaged 变量在 fetchRawEntries 运行结束，其 ManagedACL 实例就会销毁并触发 acl_free
             let aclManaged = ManagedACL(validRawAcl)
             let aclPtr = aclManaged.pointer
-            
             var results: [ACEEntry] = []
             var entry: acl_entry_t? = nil
             var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
             var i = 0
-            
             while res == 0, let e = entry {
+                let inherited = checkIsInherited(e)
                 results.append(ACEEntry(
                     name: resolveName(e),
                     uuidString: getUUIDString(e),
@@ -112,10 +173,12 @@ actor ACLScanner {
                     type: getTagType(e),
                     permissions: parsePermissions(e),
                     flags: parseFlags(e),
-                    rawBitmask: getSafeRawMask(e),
-                    isInherited: checkIsInherited(e),
-                    inheritanceDepth: checkIsInherited(e) ? -1 : 0,
-                    sourcePath: checkIsInherited(e) ? "正在溯源..." : path,
+                    // [修改] 使用函数计算并填入 Mask (短名)
+                    permissionMask: getPermissionMask(e),
+                    flagMask: getFlagMask(e),
+                    isInherited: inherited,
+                    inheritanceDepth: inherited ? -1 : 0,
+                    sourcePath: inherited ? "正在溯源..." : path,
                     index: i
                 ))
                 res = acl_get_entry(aclPtr, ACL_NEXT_ENTRY.rawValue, &entry)
@@ -123,70 +186,50 @@ actor ACLScanner {
             }
             return results
         }
-        
-        // 权限探测逻辑
         if access(path, R_OK) != 0 {
-            let e = errno
-            if e == EACCES || e == EPERM {
-                throw POSIXError(.EACCES)
-            }
-            if e == ENOENT {
-                throw POSIXError(.ENOENT)
-            }
+            let err = errno
+            if err == EPERM { throw CustomError.systemRestricted(path) }
+            if err == EACCES { throw CustomError.privacyRestricted(path) }
         }
-        
-        // 有权限但无 ACL
         return []
     }
 
-    // 获取物理标识符并进行哈希保护（去标识化处理）
-    private static func getFileSystemIdentifier(for path: String) -> Int? {
-        var st = stat()
-        // 通过 stat 获取 st_dev (设备ID) 和 st_ino (节点ID)
-        guard stat(path, &st) == 0 else { return nil }
-        // 将两者组合为指纹并哈希，保证仅在内存中存在且外部无法还原物理 ID
-        return "\(st.st_dev)-\(st.st_ino)".hashValue
-    }
-
-    // 将 UUID 转换为用户名或组名
-    private static func resolveName(_ entry: acl_entry_t) -> String {
-        guard let q = acl_get_qualifier(entry) else { return "未知" }
-        // 核心加固：qualifier 产生的内存必须立刻转换并在此处手动释放
-        defer { acl_free(q) }
-        
-        let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
-        var id: uid_t = 0
-        var type: Int32 = 0
-        
-        let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
-        
-        // 调用桥接后的系统函数解析身份
-        if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
-            if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
-            if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
-        }
-        return "ID: \(id)"
-    }
-
-    private static func getSafeRawMask(_ entry: acl_entry_t) -> UInt32 {
+    // [修改] 提取函数使用 permissionBitmask (长名)
+    private static func getPermissionMask(_ entry: acl_entry_t) -> UInt32 {
         var ps: acl_permset_t? = nil
         acl_get_permset(entry, &ps)
         guard let validPs = ps else { return 0 }
-        var fullMask: UInt32 = 0
+        var mask: UInt32 = 0
         for perm in ACLPermission.allCases {
-            if acl_get_perm_np(validPs, acl_perm_t(perm.bitmask)) == 1 {
-                fullMask |= perm.bitmask
+            if acl_get_perm_np(validPs, acl_perm_t(perm.permissionBitmask)) == 1 {
+                mask |= perm.permissionBitmask
             }
         }
-        return fullMask
+        return mask
     }
+    
+    // [修改] 提取函数使用 flagBitmask (长名)
+    private static func getFlagMask(_ entry: acl_entry_t) -> UInt32 {
+        var fs: acl_flagset_t? = nil
+        acl_get_flagset_np(UnsafeMutableRawPointer(entry), &fs)
+        guard let validFs = fs else { return 0 }
+        var mask: UInt32 = 0
+        for flag in ACEFlag.allCases {
+            if acl_get_flag_np(validFs, acl_flag_t(flag.flagBitmask)) == 1 {
+                mask |= flag.flagBitmask
+            }
+        }
+        return mask
+    }
+    
+    // --- 辅助函数同步更新 ---
 
     private static func parsePermissions(_ entry: acl_entry_t) -> [String] {
         var ps: acl_permset_t? = nil
         acl_get_permset(entry, &ps)
         guard let validPs = ps else { return [] }
         return ACLPermission.allCases.compactMap { perm in
-            acl_get_perm_np(validPs, acl_perm_t(perm.bitmask)) == 1 ? perm.rawValue : nil
+            acl_get_perm_np(validPs, acl_perm_t(perm.permissionBitmask)) == 1 ? perm.rawValue : nil
         }
     }
 
@@ -195,8 +238,29 @@ actor ACLScanner {
         acl_get_flagset_np(UnsafeMutableRawPointer(entry), &fs)
         guard let validFs = fs else { return [] }
         return ACEFlag.allCases.compactMap { flag in
-            acl_get_flag_np(validFs, acl_flag_t(flag.bitmask)) == 1 ? flag.rawValue : nil
+            acl_get_flag_np(validFs, acl_flag_t(flag.flagBitmask)) == 1 ? flag.rawValue : nil
         }
+    }
+
+    // (其他辅助函数保持不变)
+    private static func getFileSystemIdentifier(for path: String) -> Int? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        return "\(st.st_dev)-\(st.st_ino)".hashValue
+    }
+    
+    private static func resolveName(_ entry: acl_entry_t) -> String {
+        guard let q = acl_get_qualifier(entry) else { return "未知" }
+        defer { acl_free(q) }
+        let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
+        var id: uid_t = 0
+        var type: Int32 = 0
+        let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
+        if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
+            if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
+            if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
+        }
+        return "ID: \(id)"
     }
 
     private static func checkIsInherited(_ entry: acl_entry_t) -> Bool {
@@ -229,13 +293,17 @@ actor ACLScanner {
         let parent = url.deletingLastPathComponent().path
         return (parent == path) ? nil : parent
     }
-
-    private static func findExplicitSource(for target: ACEEntry, in parentEntries: [ACEEntry]) -> ACEEntry? {
-        parentEntries.first {
-            !$0.isInherited &&
-            $0.uuidString == target.uuidString &&
-            $0.type == target.type &&
-            $0.rawBitmask == target.rawBitmask
+}
+enum CustomError: LocalizedError {
+    case systemRestricted(String)
+    case privacyRestricted(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .systemRestricted(let path):
+            return "系统强制保护: 文件夹 '\(URL(fileURLWithPath: path).lastPathComponent)' 受 macOS 系统完整性保护 (SIP) 或内核拦截，无法读取 ACL。"
+        case .privacyRestricted(let path):
+            return "隐私受限: 无法读取 '\(URL(fileURLWithPath: path).lastPathComponent)'。请在“系统设置 -> 隐私与安全性 -> 完全磁盘访问权限”中授权此 App。"
         }
     }
 }
