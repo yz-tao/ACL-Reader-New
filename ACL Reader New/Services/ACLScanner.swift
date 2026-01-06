@@ -45,6 +45,34 @@ private struct InheritanceValidator {
         
         return true
     }
+    
+    // [新增] 检查子项的继承标记是否符合父项的遗传逻辑
+    func checkFlagConsistency(parent: ACEEntry, child: ACEEntry) -> Bool {
+        // 定义遗传相关的位掩码：file_inherit | directory_inherit
+        // 注意：only_inherit (0x100) 不参与比对，因为它在遗传时会被剥离，不应出现在子项中
+        let inheritMask = ACEFlag.fileInherit.flagBitmask | ACEFlag.dirInherit.flagBitmask
+        
+        let childGenetics = child.flagMask & inheritMask
+        
+        if !isTargetDirectory {
+            // [逻辑点 1] 目标是文件
+            // 文件通常作为叶子节点，系统默认继承规则下不应具备遗传给下一代的能力 (即不应有 FI/DI)。
+            // 如果文件上有 FI/DI，说明该文件可能被手动修改过 Flag，不再被视为“纯净”的继承项。
+            return childGenetics == 0
+        } else {
+            // [逻辑点 2] 目标是目录
+            let parentGenetics = parent.flagMask & inheritMask
+            let parentHasLI = (parent.flagMask & ACEFlag.limitInherit.flagBitmask) != 0
+            
+            if parentHasLI {
+                // 如果父项限制了不深层遗传 (limit_inherit)，子目录应该“绝育”，不再带有遗传标
+                return childGenetics == 0
+            } else {
+                // 正常遗传：子目录的遗传标记 (FI/DI) 必须与父项完全一致（基因复制）
+                return childGenetics == parentGenetics
+            }
+        }
+    }
 }
 
 enum MatchGrade {
@@ -141,6 +169,10 @@ actor ACLScanner {
                   parent.type == target.type else { return false }
             
             guard validator.canInherit(parent: parent, depth: currentDepth) else { return false }
+            
+            // [新增] 这一行是本次修改的核心：在对比权限位之前，先验证继承标记的一致性
+            // 只有当“基因”对得上（Flags 演化逻辑正确），才去比对“长相”（Permission Mask）
+            guard validator.checkFlagConsistency(parent: parent, child: target) else { return false }
             
             // [修改] 使用 permissionMask (短名)
             let childMask = target.permissionMask
