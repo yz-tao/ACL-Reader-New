@@ -45,6 +45,34 @@ private struct InheritanceValidator {
         
         return true
     }
+    
+    // [新增] 检查子项的继承标记是否符合父项的遗传逻辑
+    func checkFlagConsistency(parent: ACEEntry, child: ACEEntry) -> Bool {
+        // 定义遗传相关的位掩码：file_inherit | directory_inherit
+        // 注意：only_inherit (0x100) 不参与比对，因为它在遗传时会被剥离，不应出现在子项中
+        let inheritMask = ACEFlag.fileInherit.flagBitmask | ACEFlag.dirInherit.flagBitmask
+        
+        let childGenetics = child.flagMask & inheritMask
+        
+        if !isTargetDirectory {
+            // [逻辑点 1] 目标是文件
+            // 文件通常作为叶子节点，系统默认继承规则下不应具备遗传给下一代的能力 (即不应有 FI/DI)。
+            // 如果文件上有 FI/DI，说明该文件可能被手动修改过 Flag，不再被视为“纯净”的继承项。
+            return childGenetics == 0
+        } else {
+            // [逻辑点 2] 目标是目录
+            let parentGenetics = parent.flagMask & inheritMask
+            let parentHasLI = (parent.flagMask & ACEFlag.limitInherit.flagBitmask) != 0
+            
+            if parentHasLI {
+                // 如果父项限制了不深层遗传 (limit_inherit)，子目录应该“绝育”，不再带有遗传标
+                return childGenetics == 0
+            } else {
+                // 正常遗传：子目录的遗传标记 (FI/DI) 必须与父项完全一致（基因复制）
+                return childGenetics == parentGenetics
+            }
+        }
+    }
 }
 
 enum MatchGrade {
@@ -142,6 +170,10 @@ actor ACLScanner {
             
             guard validator.canInherit(parent: parent, depth: currentDepth) else { return false }
             
+            // [新增] 这一行是本次修改的核心：在对比权限位之前，先验证继承标记的一致性
+            // 只有当“基因”对得上（Flags 演化逻辑正确），才去比对“长相”（Permission Mask）
+            guard validator.checkFlagConsistency(parent: parent, child: target) else { return false }
+            
             // [修改] 使用 permissionMask (短名)
             let childMask = target.permissionMask
             let parentMask = parent.permissionMask
@@ -165,11 +197,17 @@ actor ACLScanner {
             var res = acl_get_entry(aclPtr, ACL_FIRST_ENTRY.rawValue, &entry)
             var i = 0
             while res == 0, let e = entry {
+                // [修改点 1]：获取 UUID 字符串
+                let uuidStr = getUUIDString(e)
+                                
+                // [修改点 2]：一次性解析出名字和是否为组，不再分别调用
+                let identity = resolveIdentity(entry: e, uuidString: uuidStr)
+                
                 let inherited = checkIsInherited(e)
                 results.append(ACEEntry(
-                    name: resolveName(e),
-                    uuidString: getUUIDString(e),
-                    isGroup: checkIsGroup(e),
+                    name: identity.name,       // 使用解析出的名字
+                    uuidString: uuidStr,
+                    isGroup: identity.isGroup, // 使用解析出的正确类型
                     type: getTagType(e),
                     permissions: parsePermissions(e),
                     flags: parseFlags(e),
@@ -249,18 +287,41 @@ actor ACLScanner {
         return "\(st.st_dev)-\(st.st_ino)".hashValue
     }
     
-    private static func resolveName(_ entry: acl_entry_t) -> String {
-        guard let q = acl_get_qualifier(entry) else { return "未知" }
-        defer { acl_free(q) }
-        let uPtr = q.bindMemory(to: uuid_t.self, capacity: 1)
+    // [修改点 3]：替代原有的 resolveName，同时返回 (name, isGroup)
+    private static func resolveIdentity(entry: acl_entry_t, uuidString: String) -> (name: String, isGroup: Bool) {
+        // 尝试从 UUID 解析
+        guard let uuid = UUID(uuidString: uuidString) else {
+            return ("无效 UUID", false)
+        }
+            
+        var uuidBytes = uuid.uuid
         var id: uid_t = 0
         var type: Int32 = 0
-        let rawUuidPtr = UnsafeRawPointer(uPtr).assumingMemoryBound(to: UInt8.self)
-        if mbr_uuid_to_id(rawUuidPtr, &id, &type) == 0 {
-            if type == ID_TYPE_GID, let g = getgrgid(id) { return String(cString: g.pointee.gr_name) }
-            if type == ID_TYPE_UID, let p = getpwuid(id) { return String(cString: p.pointee.pw_name) }
+        
+        // 调用底层 API 查询身份
+        let result = withUnsafePointer(to: &uuidBytes) { ptr -> Int32 in
+            let rawPtr = UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+            return mbr_uuid_to_id(rawPtr, &id, &type)
         }
-        return "ID: \(id)"
+            
+        if result == 0 {
+            if type == ID_TYPE_GID {
+                // 是群组
+                if let g = getgrgid(id) {
+                    return (String(cString: g.pointee.gr_name), true)
+                }
+                return ("GID: \(id)", true)
+            } else if type == ID_TYPE_UID {
+                // 是用户
+                if let p = getpwuid(id) {
+                    return (String(cString: p.pointee.pw_name), false)
+                }
+                return ("UID: \(id)", false)
+            }
+        }
+            
+        // 如果查不到（比如未知的 UUID），默认当做非组处理，或者你可以根据需求调整
+        return ("未知: \(uuidString.prefix(8))", false)
     }
 
     private static func checkIsInherited(_ entry: acl_entry_t) -> Bool {
@@ -274,12 +335,6 @@ actor ACLScanner {
         guard let q = acl_get_qualifier(entry) else { return "" }
         defer { acl_free(q) }
         return UUID(uuid: q.bindMemory(to: uuid_t.self, capacity: 1).pointee).uuidString
-    }
-
-    private static func checkIsGroup(_ entry: acl_entry_t) -> Bool {
-        var tag: acl_tag_t = ACL_UNDEFINED_TAG
-        acl_get_tag_type(entry, &tag)
-        return tag == ACL_EXTENDED_ALLOW || tag == ACL_EXTENDED_DENY
     }
 
     private static func getTagType(_ entry: acl_entry_t) -> String {
