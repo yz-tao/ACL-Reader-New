@@ -7,20 +7,33 @@
 
 import SwiftUI
 
+// [新增] 定义一个通知名称，用于发送“聚焦输入框”的信号
+extension Notification.Name {
+    static let focusPathField = Notification.Name("focusPathField")
+}
+
 @main
 struct ACL_Reader_NewApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
-        // [新增] 隐藏系统默认标题栏，实现沉浸式效果
-        // 这会让 ContentView 充满整个窗口，包括红绿灯区域
         .windowStyle(.hiddenTitleBar)
+        // [新增] 添加菜单栏命令
+        .commands {
+            CommandMenu("前往") {
+                Button("前往文件夹...") {
+                    // 发送通知，通知 ContentView 聚焦输入框
+                    NotificationCenter.default.post(name: .focusPathField, object: nil)
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift]) // 绑定 Cmd+Shift+G
+            }
+        }
 
         WindowGroup("ACL 查看器", id: "viewer", for: String.self) { $path in
             ContentView(initialPath: path)
         }
-        // 新窗口同样需要这个样式
         .windowStyle(.hiddenTitleBar)
+        // 新窗口也需要支持这个菜单，SwiftUI 会自动处理
     }
 }

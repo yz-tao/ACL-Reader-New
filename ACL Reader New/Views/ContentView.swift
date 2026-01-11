@@ -12,6 +12,9 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var viewModel: ScannerViewModel
     @State private var isDragTargeted: Bool = false
+    
+    // [新增] 焦点状态，用于控制输入框是否被激活
+    @FocusState private var isPathFieldFocused: Bool
 
     init(initialPath: String? = nil) {
         _viewModel = StateObject(wrappedValue: ScannerViewModel(path: initialPath))
@@ -35,8 +38,10 @@ struct ContentView: View {
                 
                 // 1.2 控制栏
                 HStack(spacing: 12) {
+                    // [修改] 绑定焦点状态
                     TextField("目标路径", text: $viewModel.path)
                         .textFieldStyle(.roundedBorder)
+                        .focused($isPathFieldFocused) // 绑定焦点
                         .overlay(alignment: .trailing) {
                             if !viewModel.path.isEmpty {
                                 Button(action: { viewModel.path = "" }) {
@@ -118,27 +123,23 @@ struct ContentView: View {
                 viewModel.path = newPath
                 viewModel.startScan()
             }
-            // 路径栏保持纯白背景 (内容色)
             .background(Color(nsColor: .textBackgroundColor))
             .zIndex(2)
             
             // --- 4. 底部状态栏 (常驻) ---
             VStack(spacing: 0) {
-                Divider() // 分割线
-                
+                Divider()
                 HStack {
                     Spacer()
-                    // 只有有结果时才显示文字
                     if !viewModel.results.isEmpty {
                         Text("\(viewModel.results.count) 项")
                             .font(.system(size: 11))
-                            .foregroundColor(.primary.opacity(0.8)) // 稍微加深一点颜色
+                            .foregroundColor(.primary.opacity(0.8))
                     }
                     Spacer()
                 }
-                .frame(height: 27) // 高度与路径栏一致
+                .frame(height: 27)
                 .background(
-                    // [修改] 使用标准窗口背景色 (不透明灰色)
                     Color(nsColor: .windowBackgroundColor)
                 )
             }
@@ -152,6 +153,13 @@ struct ContentView: View {
         .onAppear {
             if !viewModel.path.isEmpty && viewModel.results.isEmpty {
                 viewModel.startScan()
+            }
+        }
+        // [新增] 监听通知：当按下 Cmd+Shift+G 时，自动聚焦输入框
+        .onReceive(NotificationCenter.default.publisher(for: .focusPathField)) { _ in
+            // 稍微延迟一点点以确保窗口处于激活状态
+            DispatchQueue.main.async {
+                isPathFieldFocused = true
             }
         }
     }
@@ -188,7 +196,7 @@ struct ContentView: View {
     }
 }
 
-// ACERowView 保持不变
+// ACERowView 保持不变...
 struct ACERowView: View {
     let entry: ACEEntry
     var body: some View {
