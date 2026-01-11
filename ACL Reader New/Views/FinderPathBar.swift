@@ -5,13 +5,6 @@
 //  Created by tyz on 1/11/26.
 //
 
-//
-//  FinderPathBar.swift
-//  ACL Reader New
-//
-//  Created by CodeX.
-//
-
 import SwiftUI
 
 struct FinderPathBar: View {
@@ -74,62 +67,70 @@ struct FinderPathBar: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 1) {
                     ForEach(pathNodes) { node in
-                        HStack(spacing: 4) {
-                            // 图标
-                            Image(nsImage: node.icon)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 16, height: 16)
-                            
-                            // 名称
-                            Text(node.name)
-                                .font(.system(size: 12))
-                                // [修改] 统一字体样式，不再区分 isLast
-                                .foregroundColor(.secondary) // 统一为灰色
-                                .fontWeight(.regular)        // 统一为常规字重
-                                .lineLimit(1)
-                                .fixedSize()
-                            
-                            // 分隔符 (除了最后一个)
-                            if !node.isLast {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.secondary.opacity(0.5))
-                                    .padding(.leading, 4)
-                                    .padding(.trailing, 2)
+                        // [核心修改] 使用 Button 替代 onTapGesture
+                        // Button 天然支持“按下高亮、松开触发、移出取消”的标准交互逻辑
+                        Button(action: {
+                            onPathSelect(node.fullPath)
+                        }) {
+                            HStack(spacing: 4) {
+                                // 图标
+                                Image(nsImage: node.icon)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 16, height: 16)
+                                
+                                // 名称
+                                Text(node.name)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
+                                    .fontWeight(.regular)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                
+                                // 分隔符 (除了最后一个)
+                                if !node.isLast {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(.secondary.opacity(0.5))
+                                        .padding(.leading, 4)
+                                        .padding(.trailing, 2)
+                                }
                             }
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 4)
+                            .contentShape(Rectangle()) // 确保点击区域完整
                         }
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 4)
-                        .contentShape(Rectangle())
-                        // 交互：点击跳转
-                        .onTapGesture {
-                            if !node.isLast {
-                                onPathSelect(node.fullPath)
-                            }
-                        }
-                        // 悬停效果
-                        .onHover { isHovering in
-                            if isHovering && !node.isLast {
-                                NSCursor.pointingHand.push()
-                            } else {
-                                NSCursor.pop()
-                            }
-                        }
+                        // [关键] 应用自定义样式，去掉默认按钮外观，只保留行为
+                        .buttonStyle(FinderNodeButtonStyle(isLast: node.isLast))
+                        // 禁用最后一个节点的交互（因为它就是当前目录，无需跳转）
+                        .disabled(node.isLast)
                     }
                 }
                 .padding(.horizontal, 10)
             }
             
-            // 占位符，把内容推到左边
             Spacer()
-            
-            // [已删除] 右侧的文件类型文字
         }
         .frame(height: 26)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
             Divider()
         }
+    }
+}
+
+// [新增] 自定义按钮样式，模拟 Finder 点击反馈
+struct FinderNodeButtonStyle: ButtonStyle {
+    let isLast: Bool
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // 按下时背景变深，且仅当不是最后一个节点时才显示反馈
+            .background(
+                configuration.isPressed && !isLast
+                ? Color.secondary.opacity(0.15)
+                : Color.clear
+            )
+            .cornerRadius(4)
     }
 }
