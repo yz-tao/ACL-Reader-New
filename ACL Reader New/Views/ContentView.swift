@@ -136,7 +136,7 @@ struct ContentView: View {
                     }
                     Spacer()
                 }
-                .frame(height: 26) // 高度与路径栏一致
+                .frame(height: 27) // 高度与路径栏一致
                 .background(
                     // [修改] 使用标准窗口背景色 (不透明灰色)
                     Color(nsColor: .windowBackgroundColor)

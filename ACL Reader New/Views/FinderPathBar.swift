@@ -22,6 +22,10 @@ struct FinderPathBar: View {
     }
     
     private var pathNodes: [PathNode] {
+        // [核心修正] 如果路径为空字符串，直接返回空数组，不进行 URL 解析
+        // 这样导航栏里就什么都不显示，保持空白
+        if path.isEmpty { return [] }
+        
         let url = URL(fileURLWithPath: path)
         var nodes: [PathNode] = []
         let components = url.pathComponents
@@ -80,7 +84,6 @@ struct FinderPathBar: View {
                                         .foregroundColor(.secondary.opacity(0.5))
                                         .padding(.leading, 4)
                                         .padding(.trailing, 2)
-                                    // 修正：修正了箭头间距，使其更紧凑
                                 }
                             }
                             .padding(.vertical, 3)
@@ -95,9 +98,8 @@ struct FinderPathBar: View {
             }
             Spacer()
         }
-        .frame(height: 26)
-        // [修改] 使用 textBackgroundColor 也就是纯白色 (浅色模式下)
-        // 之前是 .windowBackgroundColor (浅灰色)
+        .frame(height: 28)
+        // 保持纯白/纯黑背景
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) {
             Divider()
