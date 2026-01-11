@@ -20,23 +20,23 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             
-            // --- 顶部控制区域 (Header) ---
+            // --- 1. 顶部控制区域 (Header) ---
             VStack(spacing: 0) {
                 
-                // 1. 标题栏区域
+                // 1.1 标题栏区域 (高度 28，与红绿灯严格对齐)
                 ZStack {
                     Text("ACL Reader New")
                         .font(.headline)
                         .foregroundColor(.primary.opacity(0.8))
-                        // [修正1] 向上微调 2pt，视觉上与红绿灯对齐
+                        // [关键] 向上微调 2pt，视觉上与红绿灯垂直居中对齐
                         .offset(y: -2)
-                        // 禁止文字捕获鼠标，确保点击标题也能拖拽窗口
+                        // [关键] 禁止文字捕获鼠标，确保点击标题文字也能拖拽窗口
                         .allowsHitTesting(false)
                 }
-                .frame(height: 28)
+                .frame(height: 28)     // macOS 标准红绿灯区域高度
                 .frame(maxWidth: .infinity)
                 
-                // 2. 控制栏
+                // 1.2 控制栏 (路径输入框等)
                 HStack(spacing: 12) {
                     TextField("目标路径", text: $viewModel.path)
                         .textFieldStyle(.roundedBorder)
@@ -64,34 +64,34 @@ struct ContentView: View {
                     .disabled(viewModel.isScanning || viewModel.path.isEmpty)
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-                .padding(.top, 4) // 稍微收紧一点间距
+                .padding(.bottom, 16)     // 底部留白
+                .padding(.top, 4)         // 标题与控制栏之间的微调间距
             }
+            // [背景] 使用支持拖拽的毛玻璃视图 (需确保项目中已有 VisualEffectBlur.swift)
             .background(
-                // 头部背景，支持拖拽
                 VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow)
                     .ignoresSafeArea()
             )
-            // 让 Header 顶到窗口最上沿 (Y=0)
+            // [布局] 让 Header 顶到窗口最上沿 (Y=0)
             .ignoresSafeArea(.container, edges: .top)
             
-            // [修正2] 删除了这里的 Divider() 分割线
+            // (此处已移除 Divider，实现无缝连接)
             
-            // --- 下方主内容与拖拽区 ---
+            // --- 2. 下方主内容与拖拽区 ---
             ZStack {
-                // 1. 背景层：高亮反馈
+                // 2.1 背景层：拖拽时的高亮反馈
                 Color.accentColor
                     .opacity(isDragTargeted ? 0.1 : 0.0)
                     .ignoresSafeArea()
                     .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
                 
-                // 2. 内容层
+                // 2.2 内容显示层
                 if !viewModel.results.isEmpty {
                     List(viewModel.results) { entry in
                         ACERowView(entry: entry)
                     }
                     .listStyle(.inset)
-                    .opacity(isDragTargeted ? 0.4 : 1.0)
+                    .opacity(isDragTargeted ? 0.4 : 1.0) // 拖拽悬停时让列表变淡
                 } else if let error = viewModel.errorMessage {
                     VStack {
                         Text(error)
@@ -101,7 +101,7 @@ struct ContentView: View {
                             .padding()
                     }
                 } else {
-                    // 空状态
+                    // 空状态 (Idle State)
                     if !viewModel.isScanning {
                         VStack(spacing: 8) {
                             Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
@@ -114,7 +114,7 @@ struct ContentView: View {
                     }
                 }
                 
-                // 3. Loading
+                // 2.3 Loading 遮罩
                 if viewModel.isScanning {
                     ProgressView("正在溯源...")
                         .padding()
@@ -123,11 +123,25 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
-                handleDrop(providers: providers)
+            
+            // --- 3. 底部 Finder 样式路径栏 (新增) ---
+            if !viewModel.path.isEmpty {
+                // (需确保项目中已有 FinderPathBar.swift)
+                FinderPathBar(path: viewModel.path) { newPath in
+                    viewModel.path = newPath
+                    viewModel.startScan()
+                }
+                .transition(.move(edge: .bottom))
+                .zIndex(2) // 确保显示在最上层
             }
-        }
+            
+        } // End of Main VStack
         .frame(minWidth: 700, minHeight: 500)
+        // 拖拽文件进入窗口的处理
+        .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
+            handleDrop(providers: providers)
+        }
+        // 窗口出现时自动扫描（适配新窗口打开）
         .onAppear {
             if !viewModel.path.isEmpty && viewModel.results.isEmpty {
                 viewModel.startScan()
@@ -154,8 +168,12 @@ struct ContentView: View {
             
             await MainActor.run {
                 guard !validPaths.isEmpty else { return }
+                
+                // 第一个文件在当前窗口打开
                 viewModel.path = validPaths[0]
                 viewModel.startScan()
+                
+                // 后续文件打开新窗口
                 if validPaths.count > 1 {
                     for i in 1..<validPaths.count {
                         openWindow(id: "viewer", value: validPaths[i])
@@ -167,15 +185,19 @@ struct ContentView: View {
     }
 }
 
-// 保持 ACERowView 不变
+// --- 单条 ACE 记录视图 ---
 struct ACERowView: View {
     let entry: ACEEntry
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // 第一行：名称与类型
             HStack {
                 Label(entry.name, systemImage: entry.isGroup ? "person.2.fill" : "person.fill")
                     .font(.system(.headline, design: .rounded))
+                
                 Spacer()
+                
                 Text(entry.type.uppercased())
                     .font(.caption.bold())
                     .padding(.horizontal, 8)
@@ -184,12 +206,16 @@ struct ACERowView: View {
                     .foregroundColor(entry.type == "Allow" ? .green : .red)
                     .cornerRadius(4)
             }
+            
+            // 第二行：具体权限位
             if !entry.permissions.isEmpty {
                 Text(entry.permissions.joined(separator: "  •  "))
                     .font(.system(size: 11))
                     .foregroundColor(.primary.opacity(0.7))
                     .lineLimit(2)
             }
+            
+            // 第三行：Flag 标志位
             if !entry.flags.isEmpty {
                 HStack {
                     Image(systemName: "arrow.turn.down.right")
@@ -198,13 +224,17 @@ struct ACERowView: View {
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(.blue)
             }
+            
+            // 第四行：继承来源与 Mask
             HStack {
                 if entry.isInherited {
                     HStack(spacing: 4) {
                         Image(systemName: entry.isSystemInterrupted ? "exclamationmark.shield.fill" : "link")
                             .foregroundColor(entry.isSystemInterrupted ? .red : (entry.isHeuristicMatch ? .orange : .secondary))
+                        
                         Text(entry.isHeuristicMatch ? "兼容继承自: \(entry.sourcePath)" : "继承自: \(entry.sourcePath)")
                             .foregroundColor(entry.isSystemInterrupted ? .red : (entry.isHeuristicMatch ? .orange : .secondary))
+                        
                         if entry.isHeuristicMatch {
                             Text("(权限位缩减)")
                                 .font(.system(size: 8))
@@ -214,7 +244,9 @@ struct ACERowView: View {
                 } else {
                     Text("本地显式定义")
                 }
+                
                 Spacer()
+                
                 Text("Mask: 0x\(String(entry.permissionMask, radix: 16).uppercased())")
             }
             .font(.system(size: 9, design: .monospaced))
@@ -223,7 +255,6 @@ struct ACERowView: View {
         .padding(.vertical, 8)
     }
 }
-
 #Preview {
     ContentView()
         .frame(minWidth: 700, minHeight: 500) // 模拟一个窗口大小
