@@ -9,10 +9,11 @@ import SwiftUI
 
 struct FinderPathBar: View {
     let path: String
-    // 回调：当用户点击路径上的某个节点时，返回该节点的完整路径
     let onPathSelect: (String) -> Void
     
-    // 路径节点模型
+    // 引入环境遍历以检测深浅色模式（虽然主要逻辑在 ButtonStyle 里，但 View 层也可以用）
+    @Environment(\.colorScheme) var colorScheme
+    
     private struct PathNode: Identifiable {
         let id = UUID()
         let name: String
@@ -21,17 +22,13 @@ struct FinderPathBar: View {
         let isLast: Bool
     }
     
-    // 计算属性：构建完全还原 Finder 的路径链
     private var pathNodes: [PathNode] {
         let url = URL(fileURLWithPath: path)
         var nodes: [PathNode] = []
-        
-        // 1. 解析路径组件
         let components = url.pathComponents
         
         var currentPath = ""
         for (index, component) in components.enumerated() {
-            // 拼接当前节点的完整路径
             if component == "/" {
                 currentPath = "/"
             } else {
@@ -42,13 +39,10 @@ struct FinderPathBar: View {
                 }
             }
             
-            // 2. 获取显示名称 (还原卷标)
             var displayName = component
             if component == "/" {
                 displayName = FileManager.default.displayName(atPath: "/")
             }
-            
-            // 3. 获取系统图标
             let icon = NSWorkspace.shared.icon(forFile: currentPath)
             
             nodes.append(PathNode(
@@ -63,52 +57,44 @@ struct FinderPathBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // --- 左侧：路径面包屑 ---
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 1) {
                     ForEach(pathNodes) { node in
-                        // [核心修改] 使用 Button 替代 onTapGesture
-                        // Button 天然支持“按下高亮、松开触发、移出取消”的标准交互逻辑
                         Button(action: {
                             onPathSelect(node.fullPath)
                         }) {
                             HStack(spacing: 4) {
-                                // 图标
                                 Image(nsImage: node.icon)
                                     .resizable()
                                     .aspectRatio(contentMode: .fit)
                                     .frame(width: 16, height: 16)
                                 
-                                // 名称
                                 Text(node.name)
                                     .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
+                                    // [关键修改] 这里不再写死颜色，颜色由 ButtonStyle 统一控制
                                     .fontWeight(.regular)
                                     .lineLimit(1)
                                     .fixedSize()
                                 
-                                // 分隔符 (除了最后一个)
                                 if !node.isLast {
                                     Image(systemName: "chevron.right")
                                         .font(.system(size: 8, weight: .bold))
-                                        .foregroundColor(.secondary.opacity(0.5))
+                                        .foregroundColor(.secondary.opacity(0.5)) // 箭头保持半透明
                                         .padding(.leading, 4)
                                         .padding(.trailing, 2)
                                 }
                             }
                             .padding(.vertical, 3)
                             .padding(.horizontal, 4)
-                            .contentShape(Rectangle()) // 确保点击区域完整
+                            .contentShape(Rectangle())
                         }
-                        // [关键] 应用自定义样式，去掉默认按钮外观，只保留行为
+                        // 应用新样式
                         .buttonStyle(FinderNodeButtonStyle(isLast: node.isLast))
-                        // 禁用最后一个节点的交互（因为它就是当前目录，无需跳转）
                         .disabled(node.isLast)
                     }
                 }
                 .padding(.horizontal, 10)
             }
-            
             Spacer()
         }
         .frame(height: 26)
@@ -119,18 +105,29 @@ struct FinderPathBar: View {
     }
 }
 
-// [新增] 自定义按钮样式，模拟 Finder 点击反馈
+// [重写] 更加原生的无边框点击反馈样式
 struct FinderNodeButtonStyle: ButtonStyle {
     let isLast: Bool
+    @Environment(\.colorScheme) var colorScheme
     
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            // 按下时背景变深，且仅当不是最后一个节点时才显示反馈
-            .background(
-                configuration.isPressed && !isLast
-                ? Color.secondary.opacity(0.15)
-                : Color.clear
+            // 1. 颜色逻辑：
+            // - 常态：Secondary (灰色)
+            // - 按下：Primary (浅色模式下变黑，深色模式下变白)
+            // - 最后一个节点(isLast)：始终为 Primary
+            .foregroundColor(
+                configuration.isPressed || isLast ? .primary : .secondary
             )
-            .cornerRadius(4)
+            // 2. 亮度逻辑 (针对图标)：
+            // - 按下时，浅色模式下稍微变暗(-0.1)，深色模式下稍微变亮(+0.1)
+            // - 这会让彩色图标也有点击反馈，而不仅仅是文字变色
+            .brightness(
+                configuration.isPressed && !isLast
+                ? (colorScheme == .dark ? 0.1 : -0.1)
+                : 0
+            )
+            // [关键] 移除了 background，不再有方块轮廓
+            // 保持透明背景，仅通过上面的颜色和亮度变化来反馈交互
     }
 }
