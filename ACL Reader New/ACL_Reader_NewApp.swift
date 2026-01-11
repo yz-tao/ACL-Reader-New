@@ -10,19 +10,17 @@ import SwiftUI
 @main
 struct ACL_Reader_NewApp: App {
     var body: some Scene {
-        // 1. 主窗口（默认启动）
         WindowGroup {
             ContentView()
         }
-        // 限制 macOS 只能运行一个主实例不太可能，但我们可以给它定义名字
-        .commands {
-            // 这里可以添加自定义菜单，目前先保持默认
-        }
+        // [新增] 隐藏系统默认标题栏，实现沉浸式效果
+        // 这会让 ContentView 充满整个窗口，包括红绿灯区域
+        .windowStyle(.hiddenTitleBar)
 
-        // 2. 辅助查看器窗口（用于打开新文件）
-        // 当调用 openWindow(id: "viewer", value: path) 时触发
         WindowGroup("ACL 查看器", id: "viewer", for: String.self) { $path in
             ContentView(initialPath: path)
         }
+        // 新窗口同样需要这个样式
+        .windowStyle(.hiddenTitleBar)
     }
 }

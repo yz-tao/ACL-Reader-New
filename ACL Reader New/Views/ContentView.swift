@@ -9,72 +9,90 @@
 import SwiftUI
 
 struct ContentView: View {
-    // 引入环境动作，用于打开新窗口
     @Environment(\.openWindow) private var openWindow
-    
     @StateObject private var viewModel: ScannerViewModel
-    
-    // 拖拽悬停状态
     @State private var isDragTargeted: Bool = false
 
-    // 自定义初始化，支持传入初始路径
     init(initialPath: String? = nil) {
         _viewModel = StateObject(wrappedValue: ScannerViewModel(path: initialPath))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // --- 顶部控制栏 ---
-            HStack(spacing: 12) {
-                TextField("目标路径", text: $viewModel.path)
-                    .textFieldStyle(.roundedBorder)
-                    .overlay(alignment: .trailing) {
-                        if !viewModel.path.isEmpty {
-                            Button(action: { viewModel.path = "" }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.gray)
+            
+            // --- 顶部控制区域 (Header) ---
+            VStack(spacing: 0) {
+                
+                // 1. 标题栏区域
+                ZStack {
+                    Text("ACL Reader New")
+                        .font(.headline)
+                        .foregroundColor(.primary.opacity(0.8))
+                        // [修正1] 向上微调 2pt，视觉上与红绿灯对齐
+                        .offset(y: -2)
+                        // 禁止文字捕获鼠标，确保点击标题也能拖拽窗口
+                        .allowsHitTesting(false)
+                }
+                .frame(height: 28)
+                .frame(maxWidth: .infinity)
+                
+                // 2. 控制栏
+                HStack(spacing: 12) {
+                    TextField("目标路径", text: $viewModel.path)
+                        .textFieldStyle(.roundedBorder)
+                        .overlay(alignment: .trailing) {
+                            if !viewModel.path.isEmpty {
+                                Button(action: { viewModel.path = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.gray)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.trailing, 8)
                             }
-                            .buttonStyle(.plain)
-                            .padding(.trailing, 8)
+                        }
+                    
+                    Button("浏览...", action: viewModel.selectPath)
+                    
+                    Button(action: viewModel.startScan) {
+                        if viewModel.isScanning {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("分析 ACL")
                         }
                     }
-                
-                Button("浏览...", action: viewModel.selectPath)
-                
-                Button(action: viewModel.startScan) {
-                    if viewModel.isScanning {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("分析 ACL")
-                    }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(viewModel.isScanning || viewModel.path.isEmpty)
                 }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(viewModel.isScanning || viewModel.path.isEmpty)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+                .padding(.top, 4) // 稍微收紧一点间距
             }
-            .padding()
-            // 使用磨砂背景，去掉底部分割线，与下方自然融合
-            .background(.ultraThinMaterial)
-            .zIndex(1) // 确保控制栏在图层最上方
-
+            .background(
+                // 头部背景，支持拖拽
+                VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow)
+                    .ignoresSafeArea()
+            )
+            // 让 Header 顶到窗口最上沿 (Y=0)
+            .ignoresSafeArea(.container, edges: .top)
+            
+            // [修正2] 删除了这里的 Divider() 分割线
+            
             // --- 下方主内容与拖拽区 ---
             ZStack {
-                // 1. 背景层：负责显示拖拽的高亮反馈
+                // 1. 背景层：高亮反馈
                 Color.accentColor
-                    .opacity(isDragTargeted ? 0.1 : 0.0) // 悬停时显示极淡的主题色
+                    .opacity(isDragTargeted ? 0.1 : 0.0)
                     .ignoresSafeArea()
                     .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
                 
                 // 2. 内容层
                 if !viewModel.results.isEmpty {
-                    // 有结果时显示列表
                     List(viewModel.results) { entry in
                         ACERowView(entry: entry)
                     }
                     .listStyle(.inset)
-                    // 即使显示列表，也可以再次拖入覆盖
-                    .opacity(isDragTargeted ? 0.4 : 1.0) // 悬停时让列表变淡，突出“即将替换”的感觉
+                    .opacity(isDragTargeted ? 0.4 : 1.0)
                 } else if let error = viewModel.errorMessage {
-                    // 显示错误信息
                     VStack {
                         Text(error)
                             .font(.callout)
@@ -83,22 +101,20 @@ struct ContentView: View {
                             .padding()
                     }
                 } else {
-                    // 空状态 (Idle State)
-                    // 只有在没结果、没错误、没在扫描时显示
+                    // 空状态
                     if !viewModel.isScanning {
-                        VStack(spacing: 16) {
+                        VStack(spacing: 8) {
                             Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
                                 .font(.title3)
                                 .fontWeight(isDragTargeted ? .bold : .regular)
                                 .foregroundColor(.secondary)
-                                // 添加轻微的缩放动画
                                 .scaleEffect(isDragTargeted ? 1.05 : 1.0)
                                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isDragTargeted)
                         }
                     }
                 }
                 
-                // 3. 扫描中的 Loading (居中覆盖)
+                // 3. Loading
                 if viewModel.isScanning {
                     ProgressView("正在溯源...")
                         .padding()
@@ -106,14 +122,12 @@ struct ContentView: View {
                         .cornerRadius(8)
                 }
             }
-            // 将整个下半部分设为拖拽接收区
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
                 handleDrop(providers: providers)
             }
         }
         .frame(minWidth: 700, minHeight: 500)
-        // 视图出现时，如果有初始路径（通过新窗口打开），自动开始扫描
         .onAppear {
             if !viewModel.path.isEmpty && viewModel.results.isEmpty {
                 viewModel.startScan()
@@ -123,7 +137,6 @@ struct ContentView: View {
     
     // --- 拖拽处理逻辑 ---
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        // 筛选出文件类型的提供者
         let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier("public.file-url") }
         guard !fileProviders.isEmpty else { return false }
 
@@ -131,26 +144,18 @@ struct ContentView: View {
             var validPaths: [String] = []
             
             for provider in fileProviders {
-                // 尝试加载 URL
                 if let url = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? URL {
                     validPaths.append(url.path)
-                }
-                // 某些情况下系统可能返回 Data 形式的 URL
-                else if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? Data,
-                        let url = URL(dataRepresentation: data, relativeTo: nil) {
+                } else if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
                     validPaths.append(url.path)
                 }
             }
             
-            // 回到主线程更新 UI
             await MainActor.run {
                 guard !validPaths.isEmpty else { return }
-                
-                // 1. 第一个文件：在当前窗口处理
                 viewModel.path = validPaths[0]
                 viewModel.startScan()
-                
-                // 2. 后续文件：打开新窗口
                 if validPaths.count > 1 {
                     for i in 1..<validPaths.count {
                         openWindow(id: "viewer", value: validPaths[i])
@@ -162,10 +167,9 @@ struct ContentView: View {
     }
 }
 
-// --- 保持原有的 ACERowView 不变 ---
+// 保持 ACERowView 不变
 struct ACERowView: View {
     let entry: ACEEntry
-    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -218,4 +222,9 @@ struct ACERowView: View {
         }
         .padding(.vertical, 8)
     }
+}
+
+#Preview {
+    ContentView()
+        .frame(minWidth: 700, minHeight: 500) // 模拟一个窗口大小
 }

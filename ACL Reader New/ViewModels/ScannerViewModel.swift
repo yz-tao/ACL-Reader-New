@@ -9,22 +9,15 @@ import SwiftUI
 
 @MainActor
 class ScannerViewModel: ObservableObject {
-    // 界面上显示的路径
     @Published var path: String
-    // 扫描出来的权限列表
     @Published var results: [ACEEntry] = []
-    // 是否正在扫描
     @Published var isScanning: Bool = false
-    // 错误信息提示
     @Published var errorMessage: String? = nil
 
-    // [修改] 增加初始化方法，允许传入初始路径
-    // 如果没有传入，默认设为空字符串，不再默认 "/Library" 以避免误导
     init(path: String? = nil) {
         self.path = path ?? ""
     }
 
-    // 执行扫描的函数
     func startScan() {
         guard !path.isEmpty else { return }
         
@@ -49,7 +42,6 @@ class ScannerViewModel: ObservableObject {
         }
     }
     
-    // 弹出 macOS 原生的文件夹选择窗口
     func selectPath() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
