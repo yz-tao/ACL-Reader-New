@@ -5,6 +5,13 @@
 //  Created by tyz on 1/11/26.
 //
 
+//
+//  FinderPathBar.swift
+//  ACL Reader New
+//
+//  Created by CodeX.
+//
+
 import SwiftUI
 
 struct FinderPathBar: View {
@@ -27,7 +34,6 @@ struct FinderPathBar: View {
         var nodes: [PathNode] = []
         
         // 1. 解析路径组件
-        // pathComponents 会返回 ["/", "Users", "tyz", ...]
         let components = url.pathComponents
         
         var currentPath = ""
@@ -36,7 +42,6 @@ struct FinderPathBar: View {
             if component == "/" {
                 currentPath = "/"
             } else {
-                // 处理路径拼接，避免出现 //Users 的情况
                 if currentPath == "/" {
                     currentPath += component
                 } else {
@@ -44,10 +49,9 @@ struct FinderPathBar: View {
                 }
             }
             
-            // 2. 获取显示名称 (关键步骤：还原卷标)
+            // 2. 获取显示名称 (还原卷标)
             var displayName = component
             if component == "/" {
-                // 如果是根路径，获取磁盘的实际名称 (例如 "Macintosh HD")
                 displayName = FileManager.default.displayName(atPath: "/")
             }
             
@@ -63,21 +67,12 @@ struct FinderPathBar: View {
         }
         return nodes
     }
-    
-    // 获取当前项的类型描述
-    private var currentItemType: String {
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: path, isDirectory: &isDir) {
-            return isDir.boolValue ? "文件夹" : "文件"
-        }
-        return "未知"
-    }
 
     var body: some View {
         HStack(spacing: 0) {
             // --- 左侧：路径面包屑 ---
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 1) { // Finder 节点间距非常紧凑
+                HStack(spacing: 1) {
                     ForEach(pathNodes) { node in
                         HStack(spacing: 4) {
                             // 图标
@@ -88,16 +83,17 @@ struct FinderPathBar: View {
                             
                             // 名称
                             Text(node.name)
-                                .font(.system(size: 12)) // Finder 字体
-                                .foregroundColor(node.isLast ? .primary : .secondary)
-                                .fontWeight(node.isLast ? .semibold : .regular)
+                                .font(.system(size: 12))
+                                // [修改] 统一字体样式，不再区分 isLast
+                                .foregroundColor(.secondary) // 统一为灰色
+                                .fontWeight(.regular)        // 统一为常规字重
                                 .lineLimit(1)
-                                .fixedSize() // 防止文字被压缩
+                                .fixedSize()
                             
                             // 分隔符 (除了最后一个)
                             if !node.isLast {
                                 Image(systemName: "chevron.right")
-                                    .font(.system(size: 8, weight: .bold)) // 很小的箭头
+                                    .font(.system(size: 8, weight: .bold))
                                     .foregroundColor(.secondary.opacity(0.5))
                                     .padding(.leading, 4)
                                     .padding(.trailing, 2)
@@ -105,14 +101,14 @@ struct FinderPathBar: View {
                         }
                         .padding(.vertical, 3)
                         .padding(.horizontal, 4)
-                        .contentShape(Rectangle()) // 扩大点击区域
+                        .contentShape(Rectangle())
                         // 交互：点击跳转
                         .onTapGesture {
                             if !node.isLast {
                                 onPathSelect(node.fullPath)
                             }
                         }
-                        // 悬停效果：模仿 Finder，鼠标放上去会有个背景色
+                        // 悬停效果
                         .onHover { isHovering in
                             if isHovering && !node.isLast {
                                 NSCursor.pointingHand.push()
@@ -125,19 +121,15 @@ struct FinderPathBar: View {
                 .padding(.horizontal, 10)
             }
             
+            // 占位符，把内容推到左边
             Spacer()
             
-            // --- 右侧：类型信息 ---
-            // 按照要求，只显示 "文件" 或 "文件夹"
-            Text(currentItemType)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .padding(.trailing, 16)
+            // [已删除] 右侧的文件类型文字
         }
-        .frame(height: 26) // Finder 底部栏标准高度
-        .background(Color(nsColor: .windowBackgroundColor)) // 原生窗口背景色
+        .frame(height: 26)
+        .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .top) {
-            Divider() // 顶部分割线
+            Divider()
         }
     }
 }
