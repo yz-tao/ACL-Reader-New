@@ -124,7 +124,7 @@ struct FinderNodeButtonStyle: ButtonStyle {
             // - 这会让彩色图标也有点击反馈，而不仅仅是文字变色
             .brightness(
                 configuration.isPressed && !isLast
-                ? (colorScheme == .dark ? 0.1 : -0.1)
+                ? (colorScheme == .dark ? 0.3 : -0.3)
                 : 0
             )
             // [关键] 移除了 background，不再有方块轮廓
