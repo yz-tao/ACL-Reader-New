@@ -2,70 +2,97 @@
 //  FinderPathBar.swift
 //  ACL Reader New
 //
-//  Created by tyz on 1/11/26.
-//  Refactored by CodeY to use NSPathControl
+//  Fixed by CodeY: Uses index-based resolution to bypass read-only 'url' property.
 //
 
 import SwiftUI
 import AppKit
 
 struct FinderPathBar: NSViewRepresentable {
-    // 接收数据
     let path: String
-    // 回传交互：当用户点击某个父文件夹时
     let onPathSelect: (String) -> Void
     
-    // 1. 创建 NSPathControl
     func makeNSView(context: Context) -> NSPathControl {
         let pathControl = NSPathControl()
-        
-        // 【关键】开启标准样式 (Finder 底部导航栏样式)
         pathControl.pathStyle = .standard
-        
-        // 允许交互（点击父目录跳转）
         pathControl.isEditable = false
-        
-        // 设置背景颜色（通常不用设，默认透明或根据系统自适应）
         pathControl.backgroundColor = .clear
-        
-        // 绑定事件目标
         pathControl.target = context.coordinator
         pathControl.action = #selector(Coordinator.pathControlClicked(_:))
         
-        // 拥抱自动布局，确保它能正确响应窗口缩放带来的压缩
         pathControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        
         return pathControl
     }
     
-    // 2. 更新数据 (SwiftUI -> AppKit)
     func updateNSView(_ nsView: NSPathControl, context: Context) {
+        // 【关键修复 1】时刻同步 parent，确保 Coordinator 访问到最新的 path 数据
+        context.coordinator.parent = self
+        
         if path.isEmpty {
-            nsView.url = nil
-        } else {
-            // 将字符串转为 URL 喂给控件，它会自动解析图标和名称
-            nsView.url = URL(fileURLWithPath: path)
+            nsView.pathItems = []
+            return
         }
+
+        let fileURL = URL(fileURLWithPath: path)
+        let componentsStrings = fileURL.pathComponents
+        
+        var items: [NSPathControlItem] = []
+        var currentURL = URL(fileURLWithPath: "/")
+        
+        for component in componentsStrings {
+            let item = NSPathControlItem()
+            
+            if component == "/" {
+                // --- 根节点视觉处理 ---
+                // 获取卷标名称 (如 "Macintosh HD")
+                let volumeName = (try? currentURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD"
+                item.title = volumeName
+                item.image = NSWorkspace.shared.icon(forFile: "/")
+                
+                // 注意：我们不设置 item.url，因为它是只读的
+            } else {
+                // --- 普通节点视觉处理 ---
+                currentURL.appendPathComponent(component)
+                item.title = component
+                item.image = NSWorkspace.shared.icon(forFile: currentURL.path)
+            }
+            
+            items.append(item)
+        }
+        
+        nsView.pathItems = items
     }
     
-    // 3. 处理交互 (AppKit -> SwiftUI)
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
     
     class Coordinator: NSObject {
         var parent: FinderPathBar
-        
-        init(_ parent: FinderPathBar) {
-            self.parent = parent
-        }
+        init(_ parent: FinderPathBar) { self.parent = parent }
         
         @objc func pathControlClicked(_ sender: NSPathControl) {
-            // sender.clickedPathItem 获取用户点击的具体那个节点
-            if let clickedItem = sender.clickedPathItem, let url = clickedItem.url {
-                // 将 URL 转换回字符串路径，并通过闭包传回给 SwiftUI
-                parent.onPathSelect(url.path)
-            }
+            // 【关键修复 2】通过索引推算路径
+            // 1. 获取用户点击了第几个节点
+            guard let clickedItem = sender.clickedPathItem,
+                  let index = sender.pathItems.firstIndex(of: clickedItem)
+            else { return }
+            
+            // 2. 获取当前的完整路径组件
+            let fullURL = URL(fileURLWithPath: parent.path)
+            let allComponents = fullURL.pathComponents
+            
+            // 安全检查：防止数组越界
+            guard index < allComponents.count else { return }
+            
+            // 3. 截取从根目录到被点击节点的路径组件
+            let targetComponents = Array(allComponents[0...index])
+            
+            // 4. 重组为路径字符串
+            let newPath = NSString.path(withComponents: targetComponents)
+            
+            // 5. 回调
+            parent.onPathSelect(newPath)
         }
     }
 }
