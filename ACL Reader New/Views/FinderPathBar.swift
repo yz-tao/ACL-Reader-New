@@ -21,6 +21,12 @@ struct FinderPathBar: NSViewRepresentable {
         pathControl.action = #selector(Coordinator.pathControlClicked(_:))
         
         pathControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        
+        // 5. 【关键修复】去掉蓝框 & 解决"点两次"问题
+        // .none 去掉视觉上的蓝色光圈
+        pathControl.focusRingType = .none
+        // true 拒绝成为第一响应者，这样点击会立即触发 Action，而不是先获取焦点
+        pathControl.refusesFirstResponder = true
         return pathControl
     }
     
