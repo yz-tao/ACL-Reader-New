@@ -141,12 +141,16 @@ struct ContentView: View {
             // --- 4. 底部状态栏 (常驻) ---
             VStack(spacing: 0) {
                 Divider()
+                
+                // 1. 基础容器 (高度 27)
                 HStack {
                     Spacer()
                     if !viewModel.results.isEmpty {
                         Text("\(viewModel.results.count) 项")
                             .font(.system(size: 11))
                             .foregroundColor(.primary.opacity(0.8))
+                            // 2. 只有文字不需要响应点击，保持穿透
+                            .allowsHitTesting(false)
                     }
                     Spacer()
                 }
@@ -154,6 +158,9 @@ struct ContentView: View {
                 .background(
                     Color(nsColor: .windowBackgroundColor)
                 )
+                // 3. 【终极方案】使用 overlay 覆盖一层透明的拖拽板
+                // 它会自动填满整个 height: 27 的区域，并拦截所有点击用于拖拽
+                .overlay(DraggableWindowView())
             }
             .zIndex(2)
             
