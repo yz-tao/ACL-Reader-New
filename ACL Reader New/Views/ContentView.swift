@@ -119,24 +119,24 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
             // --- 3. 底部 Finder 样式路径栏 (常驻) ---
-                        // 改进点：使用 VStack 包装，强制高度 + 背景色，确保即使路径为空，栏也在。
-                        VStack(spacing: 0) {
-                            Divider() // 1. 顶部分割线，界定区域
-                            
-                            ZStack {
-                                // 2. 背景色 (模拟 Finder 底部栏颜色)
-                                Color(nsColor: .windowBackgroundColor)
-                                
-                                // 3. 路径控件
-                                FinderPathBar(path: viewModel.path) { newPath in
-                                    viewModel.path = newPath
-                                    viewModel.startScan()
-                                }
-                                .padding(.horizontal, 10) // 左右留一点呼吸空间
-                            }
-                            .frame(height: 26) // 4. 【关键】强制固定高度 (Finder 约为 24~28px)
-                        }
-                        .zIndex(2) // 确保它浮在列表内容之上
+            VStack(spacing: 0) {
+                Divider() // 顶部分割线
+                
+                ZStack {
+                    // 1. 背景色：使用文本背景色
+                    // 在浅色模式下它是纯白，完美符合你的要求；深色模式下自动变深。
+                    Color(nsColor: .textBackgroundColor)
+                    
+                    // 2. 路径控件
+                    FinderPathBar(path: viewModel.path) { newPath in
+                        viewModel.path = newPath
+                        viewModel.startScan()
+                    }
+                    .padding(.horizontal, 6) // 左右留白，防止文字贴边
+                }
+                .frame(height: 27) // 【修改】高度调整为 27
+            }
+            .zIndex(2) // 确保层级最高
             
             // --- 4. 底部状态栏 (常驻) ---
             VStack(spacing: 0) {
