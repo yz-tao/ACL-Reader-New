@@ -239,7 +239,7 @@ struct ACERowView: View {
             HStack {
                 // [修改] 使用 iconName，不指定颜色以保持一致性
                 Label(entry.name, systemImage: iconName)
-                    .font(.system(.headline, design: .rounded))
+                    .font(.system(.body, design: .rounded))
                 Spacer()
                 Text(entry.type.uppercased())
                     .font(.caption.bold())
