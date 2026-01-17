@@ -217,30 +217,48 @@ struct ContentView: View {
 
 // ACERowView 保持不变...
 // ACERowView 修改版
+// ACERowView 颜色修正版：蓝色图标 + 粗体文字
 struct ACERowView: View {
     let entry: ACEEntry
     
-    // [新增] 集中处理图标逻辑
+    // 图标名称逻辑：保持实心 (.fill)
     private var iconName: String {
-        // 1. 优先匹配 everyone (忽略大小写)
+        // 1. Everyone -> 三人实心
         if entry.name.caseInsensitiveCompare("everyone") == .orderedSame {
             return "person.3.fill"
         }
-        // 2. 匹配当前运行此程序的用户 (使用系统 API)
+        // 2. 当前用户 -> 圆形头像
         if entry.name == NSUserName() {
             return "person.crop.circle"
         }
-        // 3. 原有逻辑：组 vs 个人
-        return entry.isGroup ? "person.2.fill" : "person.fill"
+        // 3. 组 -> 双人实心
+        if entry.isGroup {
+            return "person.2.fill"
+        }
+        // 4. 普通用户 -> 单人实心
+        return "person.fill"
     }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                // [修改] 使用 iconName，不指定颜色以保持一致性
-                Label(entry.name, systemImage: iconName)
-                    .font(.system(.body, design: .rounded))
+            
+            HStack(spacing: 6) {
+                
+                // 1. 图标区域
+                Image(systemName: iconName)
+                    // 保持 Regular (标准体)，避免变粗
+                    .font(.system(size: 15, weight: .regular))
+                    // [关键修改] 指定为蓝色，找回原本的感觉
+                    .foregroundColor(.blue)
+                
+                // 2. 文字区域：保持 Headline (粗体)
+                Text(entry.name)
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundColor(.primary)
+                
                 Spacer()
+                
+                // 权限类型标签
                 Text(entry.type.uppercased())
                     .font(.caption.bold())
                     .padding(.horizontal, 8)
@@ -249,6 +267,8 @@ struct ACERowView: View {
                     .foregroundColor(entry.type == "Allow" ? .green : .red)
                     .cornerRadius(4)
             }
+            
+            // 下方详情保持不变
             if !entry.permissions.isEmpty {
                 Text(entry.permissions.joined(separator: "  •  "))
                     .font(.system(size: 11))
