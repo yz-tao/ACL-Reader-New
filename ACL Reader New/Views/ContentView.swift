@@ -216,12 +216,29 @@ struct ContentView: View {
 }
 
 // ACERowView 保持不变...
+// ACERowView 修改版
 struct ACERowView: View {
     let entry: ACEEntry
+    
+    // [新增] 集中处理图标逻辑
+    private var iconName: String {
+        // 1. 优先匹配 everyone (忽略大小写)
+        if entry.name.caseInsensitiveCompare("everyone") == .orderedSame {
+            return "person.3.fill"
+        }
+        // 2. 匹配当前运行此程序的用户 (使用系统 API)
+        if entry.name == NSUserName() {
+            return "person.crop.circle"
+        }
+        // 3. 原有逻辑：组 vs 个人
+        return entry.isGroup ? "person.2.fill" : "person.fill"
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(entry.name, systemImage: entry.isGroup ? "person.2.fill" : "person.fill")
+                // [修改] 使用 iconName，不指定颜色以保持一致性
+                Label(entry.name, systemImage: iconName)
                     .font(.system(.headline, design: .rounded))
                 Spacer()
                 Text(entry.type.uppercased())
