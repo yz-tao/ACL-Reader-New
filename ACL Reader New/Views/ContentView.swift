@@ -128,8 +128,7 @@ struct ContentView: View {
                     Color(nsColor: .textBackgroundColor)
                     
                     // 2. 路径控件
-                    FinderPathBar(path: viewModel.path) { newPath in
-                        viewModel.path = newPath
+                    DrawerPathBar(path: $viewModel.path) {
                         viewModel.startScan()
                     }
                     .padding(.horizontal, 6) // 左右留白，防止文字贴边
