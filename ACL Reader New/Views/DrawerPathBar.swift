@@ -11,13 +11,19 @@ struct DrawerPathBar: View {
     @Binding var path: String
     let onNavigate: () -> Void
     
-    // --- 动画状态机 ---
-    // 1. 控制幕布是否盖住面包屑
+    // MARK: - 1. 动画配置 (在这里修改速度，逻辑会自动同步)
+    // 面包屑擦除/生长的耗时
+    private let slideDuration: TimeInterval = 5.35  //0.55
+    // 输入框淡入/淡出的耗时
+    private let fadeDuration: TimeInterval = 0.2
+    
+    // MARK: - 2. 状态管理
+    // 控制幕布的状态 (true = 盖住面包屑, false = 露出面包屑)
     @State private var isCovered: Bool = false
-    // 2. 控制输入框是否显示 (必须等幕布盖严实了再显示)
+    // 控制输入框的可见性 (true = 显示, false = 隐藏)
     @State private var showInput: Bool = false
     
-    // 输入框内容
+    // 输入框数据
     @State private var tempText: String = ""
     @FocusState private var isFocused: Bool
     
@@ -25,32 +31,26 @@ struct DrawerPathBar: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 
-                // --- 层级 1 (底层): 原生面包屑 ---
-                // 它一直都在，只是会被上面的东西盖住
+                // --- 层级 A: 原生面包屑 (最底层) ---
                 FinderPathBar(path: path) { newPath in
                     path = newPath
                     onNavigate()
                 }
-                // 强制撑满宽度，防止塌缩
-                .frame(width: geo.size.width)
-                // 点击触发编辑
+                .frame(width: geo.size.width) // 强制撑满
                 .contentShape(Rectangle())
                 .onTapGesture {
                     startEditingSequence()
                 }
                 
-                // --- 层级 2 (中间层): 遮盖幕布 (The Curtain) ---
-                // 使用与背景完全一致的颜色
+                // --- 层级 B: 遮盖幕布 (中间层) ---
+                // 颜色与背景一致，负责“擦除”视觉效果
                 Color(nsColor: .textBackgroundColor)
-                    // 宽度动画：覆盖时全宽，浏览时0宽
+                    // 宽度动画：覆盖时全宽，浏览时 0 宽
                     .frame(width: isCovered ? geo.size.width : 0)
-                    // 【关键】靠右对齐！
-                    // 这样宽度增加时，看起来是从右向左生长 (盖住面包屑)
-                    // 宽度减少时，看起来是从左向右收缩 (露出面包屑)
+                    // 靠右对齐：宽度增加时从右向左长，宽度减小时从左向右缩
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 
-                // --- 层级 3 (顶层): 输入框 ---
-                // 只有当 showInput 为 true 时才渲染/显示
+                // --- 层级 C: 输入框 (最顶层) ---
                 if showInput {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
@@ -73,50 +73,64 @@ struct DrawerPathBar: View {
                     }
                     .padding(.horizontal, 8)
                     .frame(height: 26)
-                    // 输入框的进出动画：简单的淡入淡出
-                    .transition(.opacity.animation(.easeInOut(duration: 0.15)))
+                    // 使用配置好的 fadeDuration
+                    .transition(.opacity.animation(.easeInOut(duration: fadeDuration)))
                 }
             }
         }
-        .frame(height: 27) // 锁定高度
-        // 幕布动画配置：稍微慢一点，体现“抽屉”的质感
-        .animation(.easeInOut(duration: 0.25), value: isCovered)
+        .frame(height: 27)
+        // 幕布动画绑定配置好的 slideDuration
+        .animation(.easeInOut(duration: slideDuration), value: isCovered)
         
-        // 监听快捷键
+        // 全局快捷键
         .onReceive(NotificationCenter.default.publisher(for: .focusPathField)) { _ in
             startEditingSequence()
         }
     }
     
-    // --- 时序控制逻辑 (核心) ---
+    // MARK: - 3. 时序控制逻辑 (核心修复)
     
     func startEditingSequence() {
-        // 1. 初始化文本
+        // 防止重复触发
+        guard !isCovered else { return }
+        
         tempText = path
         
-        // 2. 第一步：拉上幕布 (盖住面包屑)
-        // 动画时长由上面的 .animation(.easeInOut(duration: 0.25)) 控制
+        // 步骤 1: 开始拉幕布 (面包屑开始消失)
         isCovered = true
         
-        // 3. 第二步：等待幕布完全盖住后，显示输入框
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            showInput = true
-            // 再稍微等一点点，让输入框出来后再聚焦，体验更稳
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                isFocused = true
+        // 步骤 2: 等待幕布动画完全结束 (Dynamic Delay)
+        Task {
+            // 将秒转换为纳秒，确保等待时间与动画时间精确匹配
+            try? await Task.sleep(nanoseconds: UInt64(slideDuration * 1_000_000_000))
+            
+            // 步骤 3: 幕布盖严实了，输入框才淡入
+            await MainActor.run {
+                showInput = true
+                // 稍微给一点点视觉缓冲再聚焦，体验更柔和
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    isFocused = true
+                }
             }
         }
     }
     
     func cancelEditSequence() {
-        // 1. 第一步：隐藏输入框 (淡出)
-        // 动画时长由 .transition 里的 0.15s 控制
+        // 防止重复触发
+        guard showInput else { return }
+        
+        // 步骤 1: 隐藏输入框 (淡出)
         showInput = false
         isFocused = false
         
-        // 2. 第二步：等待输入框完全消失后，拉开幕布 (露出面包屑)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            isCovered = false
+        // 步骤 2: 等待输入框淡出动画结束
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(fadeDuration * 1_000_000_000))
+            
+            // 步骤 3: 只有输入框彻底没了，幕布才拉开 (面包屑显露)
+            await MainActor.run {
+                isCovered = false
+            }
         }
     }
     
@@ -126,7 +140,6 @@ struct DrawerPathBar: View {
         if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) {
             path = expanded
             onNavigate()
-            // 提交成功，执行退场动画
             cancelEditSequence()
         } else {
             NSSound.beep()
