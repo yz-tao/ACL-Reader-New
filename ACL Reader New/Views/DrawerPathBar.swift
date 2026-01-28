@@ -62,7 +62,7 @@ struct DrawerPathBar: View {
                             .disableAutocorrection(true)
                             .focused($isFocused)
                             // 【UI 微调】左边距设为 4，修正文字与底层图标的视觉误差，实现对齐
-                            .padding(.leading, 4)
+                            .padding(.leading, 7)
                             .onSubmit {
                                 commitPath()
                             }
