@@ -22,7 +22,7 @@ struct PathInputBar: View {
     var body: some View {
         HStack(spacing: 0) {
             // 1. 输入框
-            TextField("前往文件夹 (支持 ~)", text: $editingText)
+            TextField("前往文件夹", text: $editingText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .disableAutocorrection(true)
