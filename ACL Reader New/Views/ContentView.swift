@@ -8,13 +8,18 @@
 
 import SwiftUI
 
+// [新增] 定义通知名称，不用改 App.swift，直接写这就行
+extension Notification.Name {
+    static let forceBackupUpdate = Notification.Name("forceBackupUpdate")
+}
+
 struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var viewModel: ScannerViewModel
     @State private var isDragTargeted: Bool = false
-    
-    // [新增] 焦点状态，用于控制输入框是否被激活
     @FocusState private var isPathFieldFocused: Bool
+
+    // [删除] @State private var forceBackupUpdate (不需要了)
 
     init(initialPath: String? = nil) {
         _viewModel = StateObject(wrappedValue: ScannerViewModel(path: initialPath))
@@ -22,174 +27,117 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            
-            // --- 1. 顶部控制区域 (Header) ---
+            // --- Header ---
             VStack(spacing: 0) {
-                // 1.1 标题栏
                 ZStack {
-                    Text("ACL Reader New")
-                        .font(.headline)
-                        .foregroundColor(.primary.opacity(0.8))
-                        .offset(y: -2)
-                        .allowsHitTesting(false)
+                    Text("ACL Reader New").font(.headline)
+                        .foregroundColor(.primary.opacity(0.8)).offset(y: -2).allowsHitTesting(false)
                 }
-                .frame(height: 28)
-                .frame(maxWidth: .infinity)
+                .frame(height: 28).frame(maxWidth: .infinity)
                 
-                // 1.2 控制栏
                 HStack(spacing: 12) {
-                    // [修改] 绑定焦点状态
                     TextField("目标路径", text: $viewModel.path)
                         .textFieldStyle(.roundedBorder)
-                        .focused($isPathFieldFocused) // 绑定焦点
+                        .focused($isPathFieldFocused)
                         .overlay(alignment: .trailing) {
                             if !viewModel.path.isEmpty {
                                 Button(action: { viewModel.path = "" }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundColor(.gray)
+                                    Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
                                 }
-                                .buttonStyle(.plain)
-                                .padding(.trailing, 8)
+                                .buttonStyle(.plain).padding(.trailing, 8)
                             }
                         }
                     
-                    Button("浏览...", action: viewModel.selectPath)
+                    Button("浏览...", action: {
+                        viewModel.selectPath()
+                        // [新增] 浏览文件后，发送通知！
+                        NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
+                    })
                     
                     Button(action: viewModel.startScan) {
-                        if viewModel.isScanning {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("分析 ACL")
-                        }
+                        if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
                     }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(viewModel.isScanning)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
-                .padding(.top, 4)
+                .padding(.horizontal, 16).padding(.bottom, 16).padding(.top, 4)
             }
-            .background(
-                VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow)
-                    .ignoresSafeArea()
-            )
+            .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow).ignoresSafeArea())
             .ignoresSafeArea(.container, edges: .top)
             
-            // --- 2. 下方主内容与拖拽区 ---
+            // --- Body ---
             ZStack {
-                Color.accentColor
-                    .opacity(isDragTargeted ? 0.1 : 0.0)
-                    .ignoresSafeArea()
+                Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
                     .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
                 
                 if !viewModel.results.isEmpty {
-                    List(viewModel.results) { entry in
-                        ACERowView(entry: entry)
-                    }
-                    .listStyle(.inset)
-                    .opacity(isDragTargeted ? 0.4 : 1.0)
+                    List(viewModel.results) { entry in ACERowView(entry: entry) }
+                    .listStyle(.inset).opacity(isDragTargeted ? 0.4 : 1.0)
                 } else if let error = viewModel.errorMessage {
-                    VStack {
-                        Text(error)
-                            .font(.callout)
-                            .foregroundColor(.red)
-                            .multilineTextAlignment(.center)
-                            .padding()
-                    }
+                    VStack { Text(error).foregroundColor(.red).padding() }
                 } else {
                     if !viewModel.isScanning {
                         VStack(spacing: 8) {
                             Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
-                                .font(.title3)
-                                .fontWeight(isDragTargeted ? .bold : .regular)
-                                .foregroundColor(.secondary)
-                                .scaleEffect(isDragTargeted ? 1.05 : 1.0)
-                                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isDragTargeted)
+                                .font(.title3).foregroundColor(.secondary)
                         }
                     }
                 }
                 
                 if viewModel.isScanning {
-                    ProgressView("正在溯源...")
-                        .padding()
-                        .background(.regularMaterial)
-                        .cornerRadius(8)
+                    ProgressView("正在溯源...").padding().background(.regularMaterial).cornerRadius(8)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // --- 3. 底部 Finder 样式路径栏 (常驻) ---
+            // --- Footer Path Bar ---
             VStack(spacing: 0) {
-                Divider() // 顶部分割线
-                
+                Divider()
                 ZStack {
-                    // 1. 背景色：使用文本背景色
-                    // 在浅色模式下它是纯白，完美符合你的要求；深色模式下自动变深。
                     Color(nsColor: .textBackgroundColor)
-                    
-                    // 2. 路径控件
+                    // [恢复] 这里完全不用改了，不需要传任何多余参数
                     DrawerPathBar(path: $viewModel.path) {
                         viewModel.startScan()
                     }
-                    .padding(.horizontal, 6) // 左右留白，防止文字贴边
-                }
-                .frame(height: 27) // 【修改】高度调整为 27
-            }
-            .zIndex(2) // 确保层级最高
-            
-            // --- 4. 底部状态栏 (常驻) ---
-            VStack(spacing: 0) {
-                Divider()
-                
-                // 1. 基础容器 (高度 27)
-                HStack {
-                    Spacer()
-                    if !viewModel.results.isEmpty {
-                        Text("\(viewModel.results.count) 项")
-                            .font(.system(size: 11))
-                            .foregroundColor(.primary.opacity(0.8))
-                            // 2. 只有文字不需要响应点击，保持穿透
-                            .allowsHitTesting(false)
-                    }
-                    Spacer()
+                    .padding(.horizontal, 6)
                 }
                 .frame(height: 27)
-                .background(
-                    Color(nsColor: .windowBackgroundColor)
-                )
-                // 3. 【终极方案】使用 overlay 覆盖一层透明的拖拽板
-                // 它会自动填满整个 height: 27 的区域，并拦截所有点击用于拖拽
-                .overlay(DraggableWindowView())
             }
             .zIndex(2)
             
-        } // End of Main VStack
+            // --- Status Bar ---
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Spacer()
+                    if !viewModel.results.isEmpty {
+                        Text("\(viewModel.results.count) 项").font(.system(size: 11)).foregroundColor(.primary.opacity(0.8)).allowsHitTesting(false)
+                    }
+                    Spacer()
+                }
+                .frame(height: 27).background(Color(nsColor: .windowBackgroundColor))
+                .overlay(DraggableWindowView())
+            }
+            .zIndex(2)
+        }
         .frame(minWidth: 700, minHeight: 500)
         .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
             handleDrop(providers: providers)
         }
         .onAppear {
-            if !viewModel.path.isEmpty && viewModel.results.isEmpty {
-                viewModel.startScan()
-            }
+            if !viewModel.path.isEmpty && viewModel.results.isEmpty { viewModel.startScan() }
         }
-        // [新增] 监听通知：当按下 Cmd+Shift+G 时，自动聚焦输入框
         .onReceive(NotificationCenter.default.publisher(for: .focusPathField)) { _ in
-            // 稍微延迟一点点以确保窗口处于激活状态
-            DispatchQueue.main.async {
-                isPathFieldFocused = true
-            }
+            DispatchQueue.main.async { isPathFieldFocused = true }
         }
     }
     
-    // --- 拖拽逻辑 ---
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier("public.file-url") }
         guard !fileProviders.isEmpty else { return false }
 
         Task {
             var validPaths: [String] = []
-            
             for provider in fileProviders {
                 if let url = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? URL {
                     validPaths.append(url.path)
@@ -202,17 +150,20 @@ struct ContentView: View {
             await MainActor.run {
                 guard !validPaths.isEmpty else { return }
                 viewModel.path = validPaths[0]
+                
+                // [新增] 拖拽成功 -> 发送通知 -> 输入框收到 -> 更新备份
+                NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
+                
                 viewModel.startScan()
                 if validPaths.count > 1 {
-                    for i in 1..<validPaths.count {
-                        openWindow(id: "viewer", value: validPaths[i])
-                    }
+                    for i in 1..<validPaths.count { openWindow(id: "viewer", value: validPaths[i]) }
                 }
             }
         }
         return true
     }
 }
+// ACERowView 代码保持不变，为节省篇幅省略
 
 // ACERowView 保持不变...
 // ACERowView 修改版
