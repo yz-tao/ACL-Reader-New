@@ -17,7 +17,10 @@ struct ACL_Reader_NewApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+            
         }
+        // [关键] 声明统一工具栏样式，这是实现全屏整体下滑的“入场券”
+        .windowToolbarStyle(.unified)
         .windowStyle(.hiddenTitleBar)
         // [新增] 添加菜单栏命令
         .commands {
