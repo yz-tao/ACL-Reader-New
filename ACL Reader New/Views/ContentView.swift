@@ -4,13 +4,13 @@
 //
 //  Created by tyz on 12/27/25.
 //  Refactored by CodeX on 12/30/25.
-//  Unified Toolbar Update by CodeY.
+//  Fixed by CodeY (Layout & One-Piece Glass).
 //
 
 import SwiftUI
 import AppKit
 
-// [新增] 定义通知名称，不用改 App.swift，直接写这就行
+// [保持原样] 定义通知名称
 extension Notification.Name {
     static let forceBackupUpdate = Notification.Name("forceBackupUpdate")
 }
@@ -21,125 +21,113 @@ struct ContentView: View {
     @State private var isDragTargeted: Bool = false
     @FocusState private var isPathFieldFocused: Bool
 
-    // [删除] @State private var forceBackupUpdate (不需要了)
-
     init(initialPath: String? = nil) {
         _viewModel = StateObject(wrappedValue: ScannerViewModel(path: initialPath))
     }
 
     var body: some View {
-        ZStack {
-            // [改动1] 材质地基：全局毛玻璃
-            // 移除了原先头部单独的 VisualEffectBlur，改为铺满全窗口
-            VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow)
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
             
-            // [改动2] 内容主体结构 (原本的 Body + Footer)
+            // --- 1. 自定义输入栏 (Row 2) ---
+            // 将输入框从 Toolbar 移到这里，避免红绿灯垂直居中
+            // 它是 Body 的一部分，但视觉上和顶部连成一片
             VStack(spacing: 0) {
-                
-                // --- Body ---
-                ZStack {
-                    // 拖拽反馈底板
-                    Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
-                        .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
-                    
-                    if !viewModel.results.isEmpty {
-                        List(viewModel.results) { entry in ACERowView(entry: entry) }
-                        .listStyle(.inset)
-                        // [关键] 设为透明，透出底层的全局毛玻璃
-                        .scrollContentBackground(.hidden)
-                        .opacity(isDragTargeted ? 0.4 : 1.0)
-                    } else if let error = viewModel.errorMessage {
-                        VStack { Text(error).foregroundColor(.red).padding() }
-                    } else {
-                        if !viewModel.isScanning {
-                            VStack(spacing: 8) {
-                                Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
-                                    .font(.title3).foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                    
-                    if viewModel.isScanning {
-                        ProgressView("正在溯源...").padding().background(.regularMaterial).cornerRadius(8)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                // --- Footer Path Bar (保持原样) ---
-                VStack(spacing: 0) {
-                    Divider()
-                    ZStack {
-                        // 使用半透明背景以融合全局毛玻璃
-                        Color(nsColor: .textBackgroundColor).opacity(0.5)
-                        DrawerPathBar(path: $viewModel.path) {
-                            viewModel.startScan()
-                        }
-                        .padding(.horizontal, 6)
-                    }
-                    .frame(height: 27)
-                }
-                .zIndex(2)
-                
-                // --- Status Bar (保持原样) ---
-                VStack(spacing: 0) {
-                    Divider()
-                    HStack {
-                        Spacer()
-                        if !viewModel.results.isEmpty {
-                            Text("\(viewModel.results.count) 项").font(.system(size: 11)).foregroundColor(.primary.opacity(0.8)).allowsHitTesting(false)
-                        }
-                        Spacer()
-                    }
-                    .frame(height: 27)
-                    // 使用半透明背景
-                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
-                    .overlay(DraggableWindowView())
-                }
-                .zIndex(2)
-            }
-        }
-        // [改动3] 将 Header 移入原生 Toolbar
-        // 配合 App.swift 中的 .windowToolbarStyle(.unified) 实现全屏整体下滑
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                // 使用 VStack 撑开高度，保持原有的 Header 布局感
-                VStack(spacing: 4) {
-                    Text("ACL Reader New").font(.headline)
-                        .foregroundColor(.primary.opacity(0.8))
-                        .offset(y: -2)
-                    
-                    HStack(spacing: 12) {
-                        TextField("目标路径", text: $viewModel.path)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($isPathFieldFocused)
-                            .frame(minWidth: 400) // 适当增加宽度适配 Toolbar
-                            .overlay(alignment: .trailing) {
-                                if !viewModel.path.isEmpty {
-                                    Button(action: { viewModel.path = "" }) {
-                                        Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
-                                    }
-                                    .buttonStyle(.plain).padding(.trailing, 8)
+                HStack(spacing: 12) {
+                    TextField("目标路径", text: $viewModel.path)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isPathFieldFocused)
+                        .overlay(alignment: .trailing) {
+                            if !viewModel.path.isEmpty {
+                                Button(action: { viewModel.path = "" }) {
+                                    Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
                                 }
+                                .buttonStyle(.plain).padding(.trailing, 8)
                             }
-                        
-                        Button("浏览...", action: {
-                            viewModel.selectPath()
-                            NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
-                        })
-                        
-                        Button(action: viewModel.startScan) {
-                            if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
                         }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(viewModel.isScanning)
+                    
+                    Button("浏览...", action: {
+                        viewModel.selectPath()
+                        NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
+                    })
+                    
+                    Button(action: viewModel.startScan) {
+                        if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
                     }
-                    .padding(.bottom, 6)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(viewModel.isScanning)
                 }
-                .padding(.vertical, 4)
+                .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 8)
             }
+            // [关键] 这里的背景设为毛玻璃，并让它忽略安全区域向上延伸
+            // 这样它会“垫”在 System Toolbar 下面，形成“一体化”的视觉效果
+            .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow).ignoresSafeArea())
+            .zIndex(10) // 保证在最上层
+            
+            // --- 2. 内容层 (Body) ---
+            ZStack {
+                Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
+                    .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
+                
+                if !viewModel.results.isEmpty {
+                    List(viewModel.results) { entry in ACERowView(entry: entry) }
+                    .listStyle(.inset).opacity(isDragTargeted ? 0.4 : 1.0)
+                } else if let error = viewModel.errorMessage {
+                    VStack { Text(error).foregroundColor(.red).padding() }
+                } else {
+                    if !viewModel.isScanning {
+                        VStack(spacing: 8) {
+                            Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
+                                .font(.title3).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                if viewModel.isScanning {
+                    ProgressView("正在溯源...").padding().background(.regularMaterial).cornerRadius(8)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+            // --- 3. 底部路径栏 (Footer) ---
+            VStack(spacing: 0) {
+                Divider()
+                ZStack {
+                    Color(nsColor: .textBackgroundColor)
+                    // [修复] 严格照抄你给的代码，不传 isEditing，杜绝报错
+                    DrawerPathBar(path: $viewModel.path) {
+                        viewModel.startScan()
+                    }
+                    .padding(.horizontal, 6)
+                }
+                .frame(height: 27)
+            }
+            .zIndex(2)
+            
+            // --- 4. 底部状态栏 (Status Bar) ---
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    Spacer()
+                    if !viewModel.results.isEmpty {
+                        Text("\(viewModel.results.count) 项").font(.system(size: 11)).foregroundColor(.primary.opacity(0.8)).allowsHitTesting(false)
+                    }
+                    Spacer()
+                }
+                .frame(height: 27).background(Color(nsColor: .windowBackgroundColor))
+                .overlay(DraggableWindowView())
+            }
+            .zIndex(2)
         }
         .frame(minWidth: 700, minHeight: 500)
+        // --- 核心改动：Toolbar 只放标题 ---
+        // 这样 System Toolbar 的高度保持标准，红绿灯就会乖乖待在最上面，和标题平齐
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("ACL Reader New")
+                    .font(.headline)
+                    .foregroundColor(.primary.opacity(0.8))
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
             handleDrop(providers: providers)
         }
@@ -169,10 +157,7 @@ struct ContentView: View {
             await MainActor.run {
                 guard !validPaths.isEmpty else { return }
                 viewModel.path = validPaths[0]
-                
-                // [新增] 拖拽成功 -> 发送通知 -> 输入框收到 -> 更新备份
                 NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
-                
                 viewModel.startScan()
                 if validPaths.count > 1 {
                     for i in 1..<validPaths.count { openWindow(id: "viewer", value: validPaths[i]) }
@@ -183,48 +168,30 @@ struct ContentView: View {
     }
 }
 
-// ACERowView 保持原代码逻辑不变
+// 你的 ACERowView 保持不变
 struct ACERowView: View {
     let entry: ACEEntry
     
-    // 图标名称逻辑：保持实心 (.fill)
     private var iconName: String {
-        // 1. Everyone -> 三人实心
-        if entry.name.caseInsensitiveCompare("everyone") == .orderedSame {
-            return "person.3.fill"
-        }
-        // 2. 当前用户 -> 圆形头像
-        if entry.name == NSUserName() {
-            return "person.crop.circle"
-        }
-        // 3. 组 -> 双人实心
-        if entry.isGroup {
-            return "person.2.fill"
-        }
-        // 4. 普通用户 -> 单人实心
+        if entry.name.caseInsensitiveCompare("everyone") == .orderedSame { return "person.3.fill" }
+        if entry.name == NSUserName() { return "person.crop.circle" }
+        if entry.isGroup { return "person.2.fill" }
         return "person.fill"
     }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            
             HStack(spacing: 6) {
-                
-                // 1. 图标区域
                 Image(systemName: iconName)
-                    // 保持 Regular (标准体)，避免变粗
                     .font(.system(size: 15, weight: .regular))
-                    // [关键修改] 指定为蓝色，找回原本的感觉
                     .foregroundColor(.blue)
                 
-                // 2. 文字区域：保持 Headline (粗体)
                 Text(entry.name)
                     .font(.system(.headline, design: .rounded))
                     .foregroundColor(.primary)
                 
                 Spacer()
                 
-                // 权限类型标签
                 Text(entry.type.uppercased())
                     .font(.caption.bold())
                     .padding(.horizontal, 8)
@@ -234,7 +201,6 @@ struct ACERowView: View {
                     .cornerRadius(4)
             }
             
-            // 下方详情保持不变
             if !entry.permissions.isEmpty {
                 Text(entry.permissions.joined(separator: "  •  "))
                     .font(.system(size: 11))
@@ -273,9 +239,4 @@ struct ACERowView: View {
         }
         .padding(.vertical, 8)
     }
-}
-
-#Preview {
-    ContentView()
-        .frame(minWidth: 700, minHeight: 500) // 模拟一个窗口大小
 }
