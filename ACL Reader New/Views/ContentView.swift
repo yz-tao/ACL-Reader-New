@@ -4,7 +4,7 @@
 //
 //  Created by tyz on 12/27/25.
 //  Refactored by CodeX on 12/30/25.
-//  Fixed by CodeY (Layout & One-Piece Glass).
+//  Fixed by CodeY (Native Accessory Fix).
 //
 
 import SwiftUI
@@ -26,101 +26,83 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            
-            // --- 1. 自定义输入栏 (Row 2) ---
-            // 将输入框从 Toolbar 移到这里，避免红绿灯垂直居中
-            // 它是 Body 的一部分，但视觉上和顶部连成一片
+        ZStack {
+            // --- 1. 内容主体 (实色背景) ---
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    TextField("目标路径", text: $viewModel.path)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isPathFieldFocused)
-                        .overlay(alignment: .trailing) {
-                            if !viewModel.path.isEmpty {
-                                Button(action: { viewModel.path = "" }) {
-                                    Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                ZStack {
+                    // 拖拽反馈
+                    Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
+                        .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
+                        .onTapGesture {
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                        }
+                    
+                    // 内容列表
+                    Group {
+                        if !viewModel.results.isEmpty {
+                            List(viewModel.results) { entry in ACERowView(entry: entry) }
+                            .listStyle(.inset)
+                            .opacity(isDragTargeted ? 0.4 : 1.0)
+                            // [关键] 实色背景，遮挡毛玻璃，只让顶部透出来
+                            .scrollContentBackground(.hidden)
+                            .background(Color(nsColor: .windowBackgroundColor))
+                        } else if let error = viewModel.errorMessage {
+                            VStack { Text(error).foregroundColor(.red).padding() }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Color(nsColor: .windowBackgroundColor))
+                        } else {
+                            if !viewModel.isScanning {
+                                VStack(spacing: 8) {
+                                    Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
+                                        .font(.title3).foregroundColor(.secondary)
                                 }
-                                .buttonStyle(.plain).padding(.trailing, 8)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Color(nsColor: .windowBackgroundColor))
                             }
                         }
-                    
-                    Button("浏览...", action: {
-                        viewModel.selectPath()
-                        NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
-                    })
-                    
-                    Button(action: viewModel.startScan) {
-                        if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
-                    }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(viewModel.isScanning)
-                }
-                .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 8)
-            }
-            // [关键] 这里的背景设为毛玻璃，并让它忽略安全区域向上延伸
-            // 这样它会“垫”在 System Toolbar 下面，形成“一体化”的视觉效果
-            .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow).ignoresSafeArea())
-            .zIndex(10) // 保证在最上层
-            
-            // --- 2. 内容层 (Body) ---
-            ZStack {
-                Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
-                    .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
-                
-                if !viewModel.results.isEmpty {
-                    List(viewModel.results) { entry in ACERowView(entry: entry) }
-                    .listStyle(.inset).opacity(isDragTargeted ? 0.4 : 1.0)
-                } else if let error = viewModel.errorMessage {
-                    VStack { Text(error).foregroundColor(.red).padding() }
-                } else {
-                    if !viewModel.isScanning {
-                        VStack(spacing: 8) {
-                            Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
-                                .font(.title3).foregroundColor(.secondary)
+                        
+                        if viewModel.isScanning {
+                            ProgressView("正在溯源...").padding().background(.regularMaterial).cornerRadius(8)
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor)) // 双重保险
                 
-                if viewModel.isScanning {
-                    ProgressView("正在溯源...").padding().background(.regularMaterial).cornerRadius(8)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            // --- 3. 底部路径栏 (Footer) ---
-            VStack(spacing: 0) {
-                Divider()
-                ZStack {
-                    Color(nsColor: .textBackgroundColor)
-                    // [修复] 严格照抄你给的代码，不传 isEditing，杜绝报错
-                    DrawerPathBar(path: $viewModel.path) {
-                        viewModel.startScan()
+                // --- Footer (路径栏) ---
+                VStack(spacing: 0) {
+                    Divider()
+                    ZStack {
+                        Color(nsColor: .textBackgroundColor)
+                        // [无报错调用]
+                        DrawerPathBar(path: $viewModel.path) {
+                            viewModel.startScan()
+                        }
+                        .padding(.horizontal, 6)
                     }
-                    .padding(.horizontal, 6)
+                    .frame(height: 27)
                 }
-                .frame(height: 27)
-            }
-            .zIndex(2)
-            
-            // --- 4. 底部状态栏 (Status Bar) ---
-            VStack(spacing: 0) {
-                Divider()
-                HStack {
-                    Spacer()
-                    if !viewModel.results.isEmpty {
-                        Text("\(viewModel.results.count) 项").font(.system(size: 11)).foregroundColor(.primary.opacity(0.8)).allowsHitTesting(false)
+                .zIndex(2)
+                
+                // --- Status Bar ---
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack {
+                        Spacer()
+                        if !viewModel.results.isEmpty {
+                            Text("\(viewModel.results.count) 项").font(.system(size: 11)).foregroundColor(.primary.opacity(0.8)).allowsHitTesting(false)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    .frame(height: 27).background(Color(nsColor: .windowBackgroundColor))
+                    .overlay(DraggableWindowView())
                 }
-                .frame(height: 27).background(Color(nsColor: .windowBackgroundColor))
-                .overlay(DraggableWindowView())
+                .zIndex(2)
             }
-            .zIndex(2)
         }
         .frame(minWidth: 700, minHeight: 500)
-        // --- 核心改动：Toolbar 只放标题 ---
-        // 这样 System Toolbar 的高度保持标准，红绿灯就会乖乖待在最上面，和标题平齐
+        // --- 2. 原生工具栏：只放标题 ---
+        // 这样红绿灯就会保持在标准高度，和标题对齐
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text("ACL Reader New")
@@ -128,6 +110,11 @@ struct ContentView: View {
                     .foregroundColor(.primary.opacity(0.8))
             }
         }
+        // --- 3. 核心大招：注入 Accessory View ---
+        // 使用修正后的 TitlebarAccessory，不报错
+        .background(
+            TitlebarAccessory(viewModel: viewModel)
+        )
         .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
             handleDrop(providers: providers)
         }
@@ -168,7 +155,93 @@ struct ContentView: View {
     }
 }
 
-// 你的 ACERowView 保持不变
+// --- 修正后的标题栏附件配置器 ---
+struct TitlebarAccessory: NSViewRepresentable {
+    @ObservedObject var viewModel: ScannerViewModel
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.frame = .zero
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // 异步执行，确保 Window 已经生成
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            
+            let accessoryIdentifier = "ACLInputAccessory"
+            
+            // [修复] 正确的去重检查逻辑：检查控制器的 title
+            if window.titlebarAccessoryViewControllers.contains(where: { $0.title == accessoryIdentifier }) {
+                return
+            }
+            
+            // 1. 创建 SwiftUI 视图 (输入栏)
+            let inputBarView = AccessoryInputBar(viewModel: viewModel)
+            
+            // 2. 包装进 HostingController
+            let hostingController = NSHostingController(rootView: inputBarView)
+            hostingController.view.frame.size.height = 44 // 设定高度 (标准附件高度)
+            
+            // 3. 创建 AccessoryController
+            let accessoryController = NSTitlebarAccessoryViewController()
+            accessoryController.layoutAttribute = .bottom // 挂在标题栏底部
+            accessoryController.title = accessoryIdentifier // 设置 ID 以便去重
+            
+            // [关键修复] 正确地将 HostingController 嵌入 Accessory
+            accessoryController.view = hostingController.view
+            accessoryController.addChild(hostingController) // 保持生命周期
+            
+            // 4. 添加到窗口
+            window.addTitlebarAccessoryViewController(accessoryController)
+        }
+    }
+}
+
+// --- 提取出的输入栏视图 (运行在标题栏附件中) ---
+struct AccessoryInputBar: View {
+    @ObservedObject var viewModel: ScannerViewModel
+    
+    var body: some View {
+        ZStack {
+            // 背景毛玻璃 (确保全屏不黑)
+            VisualEffectBlur(material: .sidebar, blendingMode: .withinWindow)
+                .ignoresSafeArea()
+            
+            HStack(spacing: 12) {
+                TextField("目标路径", text: $viewModel.path)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 400)
+                    .overlay(alignment: .trailing) {
+                        if !viewModel.path.isEmpty {
+                            Button(action: { viewModel.path = "" }) {
+                                Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                            }
+                            .buttonStyle(.plain).padding(.trailing, 8)
+                        }
+                    }
+                
+                Button("浏览...", action: {
+                    viewModel.selectPath()
+                    NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
+                })
+                
+                Button(action: viewModel.startScan) {
+                    if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(viewModel.isScanning)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        // 确保填满
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// ACERowView 保持原样
 struct ACERowView: View {
     let entry: ACEEntry
     
