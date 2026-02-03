@@ -3,12 +3,11 @@
 //  ACL Reader New
 //
 //  Created by tyz on 12/27/25.
-//  Refactored by CodeX on 12/30/25.
+//  Refactored by CodeY on 2/2/26.
 //
 
 import SwiftUI
 
-// [新增] 定义通知名称，不用改 App.swift，直接写这就行
 extension Notification.Name {
     static let forceBackupUpdate = Notification.Name("forceBackupUpdate")
 }
@@ -19,53 +18,16 @@ struct ContentView: View {
     @State private var isDragTargeted: Bool = false
     @FocusState private var isPathFieldFocused: Bool
 
-    // [删除] @State private var forceBackupUpdate (不需要了)
-
     init(initialPath: String? = nil) {
         _viewModel = StateObject(wrappedValue: ScannerViewModel(path: initialPath))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // --- Header ---
-            VStack(spacing: 0) {
-                ZStack {
-                    Text("ACL Reader New").font(.headline)
-                        .foregroundColor(.primary.opacity(0.8)).offset(y: -2).allowsHitTesting(false)
-                }
-                .frame(height: 28).frame(maxWidth: .infinity)
-                
-                HStack(spacing: 12) {
-                    TextField("目标路径", text: $viewModel.path)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isPathFieldFocused)
-                        .overlay(alignment: .trailing) {
-                            if !viewModel.path.isEmpty {
-                                Button(action: { viewModel.path = "" }) {
-                                    Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
-                                }
-                                .buttonStyle(.plain).padding(.trailing, 8)
-                            }
-                        }
-                    
-                    Button("浏览...", action: {
-                        viewModel.selectPath()
-                        // [新增] 浏览文件后，发送通知！
-                        NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
-                    })
-                    
-                    Button(action: viewModel.startScan) {
-                        if viewModel.isScanning { ProgressView().controlSize(.small) } else { Text("分析 ACL") }
-                    }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(viewModel.isScanning)
-                }
-                .padding(.horizontal, 16).padding(.bottom, 16).padding(.top, 4)
-            }
-            .background(VisualEffectBlur(material: .sidebar, blendingMode: .behindWindow).ignoresSafeArea())
-            .ignoresSafeArea(.container, edges: .top)
             
-            // --- Body ---
+            // Header 已移除，由 NSToolbar 接管
+            
+            // --- Body (完整保留) ---
             ZStack {
                 Color.accentColor.opacity(isDragTargeted ? 0.1 : 0.0).ignoresSafeArea()
                     .animation(.easeInOut(duration: 0.2), value: isDragTargeted)
@@ -78,7 +40,7 @@ struct ContentView: View {
                 } else {
                     if !viewModel.isScanning {
                         VStack(spacing: 8) {
-                            Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击“浏览”开始分析")
+                            Text(isDragTargeted ? "松开即可分析" : "拖拽至此或点击上方“浏览”")
                                 .font(.title3).foregroundColor(.secondary)
                         }
                     }
@@ -90,12 +52,11 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // --- Footer Path Bar ---
+            // --- Footer Path Bar (完整保留) ---
             VStack(spacing: 0) {
                 Divider()
                 ZStack {
                     Color(nsColor: .textBackgroundColor)
-                    // [恢复] 这里完全不用改了，不需要传任何多余参数
                     DrawerPathBar(path: $viewModel.path) {
                         viewModel.startScan()
                     }
@@ -105,7 +66,7 @@ struct ContentView: View {
             }
             .zIndex(2)
             
-            // --- Status Bar ---
+            // --- Status Bar (完整保留) ---
             VStack(spacing: 0) {
                 Divider()
                 HStack {
@@ -121,6 +82,11 @@ struct ContentView: View {
             .zIndex(2)
         }
         .frame(minWidth: 700, minHeight: 500)
+        // [挂载配置]
+        .background(WindowAccessor { window in
+            guard let window = window else { return }
+            ToolbarConfigurator.configure(window, with: viewModel)
+        })
         .onDrop(of: [.fileURL], isTargeted: $isDragTargeted) { providers in
             handleDrop(providers: providers)
         }
@@ -132,6 +98,7 @@ struct ContentView: View {
         }
     }
     
+    // [保留] 拖拽逻辑
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier("public.file-url") }
         guard !fileProviders.isEmpty else { return false }
@@ -150,10 +117,7 @@ struct ContentView: View {
             await MainActor.run {
                 guard !validPaths.isEmpty else { return }
                 viewModel.path = validPaths[0]
-                
-                // [新增] 拖拽成功 -> 发送通知 -> 输入框收到 -> 更新备份
                 NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
-                
                 viewModel.startScan()
                 if validPaths.count > 1 {
                     for i in 1..<validPaths.count { openWindow(id: "viewer", value: validPaths[i]) }
