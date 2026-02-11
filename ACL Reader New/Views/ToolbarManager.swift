@@ -105,7 +105,7 @@ struct RightActionsView: View {
     @ObservedObject var viewModel: ScannerViewModel
     
     var body: some View {
-        // [调整] 内部间距微调为 8，配合小图标更协调
+        // [保持] 间距 8
         HStack(spacing: 8) {
             
             // 按钮 1：浏览
@@ -114,12 +114,16 @@ struct RightActionsView: View {
                 NotificationCenter.default.post(name: .forceBackupUpdate, object: nil)
             }) {
                 Image(systemName: "folder")
-                    // [调整] 字号 12pt (变小)
+                    // [保持] 字号 12pt
                     .font(.system(size: 12, weight: .regular))
                     .frame(width: 16, height: 16)
             }
             .buttonStyle(.bordered)
-            .controlSize(.large) // 保持外部点击区域足够大
+            .controlSize(.large)
+            // [新增] 1. 强制形状为圆角正方形 (不再是胶囊)
+            .buttonBorderShape(.roundedRectangle(radius: 6))
+            // [新增] 2. 强制外框为 32x32 正方形 (修复居中问题)
+            .frame(width: 32, height: 32)
             .help("浏览文件")
             
             // 按钮 2：分析
@@ -129,7 +133,7 @@ struct RightActionsView: View {
                         .frame(width: 16, height: 16)
                 } else {
                     Image(systemName: "play.fill")
-                        // [调整] 字号 12pt (变小)
+                        // [保持] 字号 12pt
                         .font(.system(size: 12, weight: .regular))
                         .frame(width: 16, height: 16)
                 }
@@ -137,9 +141,13 @@ struct RightActionsView: View {
             .disabled(viewModel.isScanning)
             .buttonStyle(.bordered)
             .controlSize(.large)
+            // [新增] 同上，强制变方
+            .buttonBorderShape(.roundedRectangle(radius: 6))
+            // [新增] 同上，强制居中
+            .frame(width: 32, height: 32)
             .help("分析 ACL")
         }
-        // [调整] 右侧空白减小为 10pt
+        // [保持] 右侧空白 10pt
         .padding(.trailing, 10)
     }
 }
